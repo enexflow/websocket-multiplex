@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-multiplexer
+  labels:
+    app: ws-multiplexer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ws-multiplexer
+  template:
+    metadata:
+      labels:
+        app: ws-multiplexer
+    spec:
+      containers:
+      - name: ws-multiplexer
+        image: 085680810369.dkr.ecr.eu-west-3.amazonaws.com/ws-multiplexer:1.0.1
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: UPSTREAM_URL
+          value: "ws://ocpp.monta.app"
+        - name: LOG_LEVEL
+          value: "DEBUG"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-multiplexer
+spec:
+  selector:
+    app: ws-multiplexer
+  ports:
+    - port: 8080
+  type: ClusterIP
