@@ -64,6 +64,18 @@ const masterWsOptions = {
 
 /**
  * Global connection store for tracking all active connections
+ * 
+ * @typedef {{ ws: WebSocket, connected: boolean, upstreamId: string }} ClientConnection
+ * @typedef {{ ws: WebSocket, connected: boolean, clientId: string }} UpstreamConnection
+ * @typedef {{ message: string | Buffer, timestamp: string }} QueuedMessage
+ * @typedef {{
+ *   clients: Map<string, ClientConnection>,
+ *   upstreams: Map<string, UpstreamConnection>,
+ *   master: WebSocket | null,
+ *   messageQueues: Map<string, QueuedMessage[]>
+ * }} Connections
+ * 
+ * @type {Connections}
  */
 const connections = {
 	clients: new Map(), // client connections
@@ -74,7 +86,7 @@ const connections = {
 
 /**
  * Initializes WebSocket servers and enables internal logging if needed
- * @returns {Object} Object containing the WebSocket servers
+ * @returns {{ wss: WebSocket.Server, masterWss: WebSocket.Server }} Object containing the WebSocket servers
  */
 function initializeWebSocketServers() {
 	// Enable WebSocket internal logging if debug level
@@ -137,7 +149,7 @@ function sendStatusToMaster(masterWs) {
 /**
  * Sends a message to a WebSocket connection with logging
  * @param {WebSocket} ws - The WebSocket connection
- * @param {*} message - The message to send
+ * @param {string | Buffer | ArrayBuffer | Buffer[]} message - The message to send
  * @param {string} source - Source identifier (e.g., 'multiplexer')
  * @param {string} target - Target identifier (e.g., 'client:123')
  */
@@ -155,7 +167,7 @@ function sendMessage(ws, message, source, target) {
 
 /**
  * Handles message injection from master to specified targets
- * @param {Object} data - The message data containing target and message
+ * @param {{ target: string, message: string | Buffer }} data - The message data containing target and message
  */
 function handleMasterInjection(data) {
 	if (data.target === "all-clients") {
@@ -192,7 +204,7 @@ function handleMasterInjection(data) {
 /**
  * Handles messages received from the master connection
  * @param {WebSocket} ws - The master WebSocket connection
- * @param {string} message - The message received
+ * @param {string | Buffer} message - The message received
  */
 function handleMasterMessage(ws, message) {
 	try {
@@ -278,7 +290,7 @@ function processQueuedMessages(pathname) {
 /**
  * Notifies the master about a dequeued message
  * @param {string} connectionId - The connection identifier
- * @param {Object} queuedMessage - The message that was dequeued
+ * @param {QueuedMessage} queuedMessage - The message that was dequeued
  */
 function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
 	if (connections.master) {
@@ -335,7 +347,7 @@ function handleUpstreamOpen(upstreamWs, pathname) {
 /**
  * Queues a message for later delivery
  * @param {string} pathname - The connection identifier
- * @param {*} message - The message to queue
+ * @param {string | Buffer} message - The message to queue
  */
 function queueMessage(pathname, message) {
 	const messageQueue = connections.messageQueues.get(pathname) || [];
@@ -368,7 +380,7 @@ function queueMessage(pathname, message) {
 /**
  * Sets up a timeout for a queued message
  * @param {string} pathname - The connection identifier
- * @param {Object} queuedMessage - The queued message
+ * @param {QueuedMessage} queuedMessage - The queued message
  */
 function setupMessageTimeout(pathname, queuedMessage) {
 	setTimeout(() => {
@@ -389,7 +401,7 @@ function setupMessageTimeout(pathname, queuedMessage) {
 /**
  * Notifies the master about a discarded message
  * @param {string} connectionId - The connection identifier
- * @param {Object} queuedMessage - The message that was discarded
+ * @param {QueuedMessage} queuedMessage - The message that was discarded
  */
 function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 	if (connections.master) {
@@ -421,7 +433,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
  * Handles messages from client to upstream
  * @param {WebSocket} ws - The client WebSocket connection
  * @param {string} pathname - The connection identifier
- * @param {*} message - The message received
+ * @param {string | Buffer} message - The message received
  */
 function handleClientMessage(ws, pathname, message) {
 	const upstream = connections.upstreams.get(pathname);
@@ -441,7 +453,7 @@ function handleClientMessage(ws, pathname, message) {
  * Handles messages from upstream to client
  * @param {WebSocket} ws - The client WebSocket connection
  * @param {string} pathname - The connection identifier
- * @param {*} message - The message received
+ * @param {string | Buffer} message - The message received
  */
 function handleUpstreamMessage(ws, pathname, message) {
 	logMessageIfDebug("Upstream → Client", pathname, message);
@@ -455,7 +467,7 @@ function handleUpstreamMessage(ws, pathname, message) {
  * Logs a message if debug level is enabled
  * @param {string} direction - The message direction
  * @param {string} pathname - The connection identifier
- * @param {*} message - The message to log
+ * @param {string | Buffer} message - The message to log
  */
 function logMessageIfDebug(direction, pathname, message) {
 	if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
@@ -483,7 +495,7 @@ function logMessageIfDebug(direction, pathname, message) {
  * Notifies the master about a message
  * @param {string} direction - The message direction
  * @param {string} connectionId - The connection identifier
- * @param {*} message - The message
+ * @param {string | Buffer} message - The message
  */
 function notifyMasterAboutMessage(direction, connectionId, message) {
 	if (connections.master) {
