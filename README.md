@@ -188,6 +188,14 @@ This is a simple test client that connects to the WebSocket multiplexer and simu
 npm install
 ```
 
+## Docker
+
+You can run the WebSocket multiplexer using Docker:
+
+```bash
+docker run -p 8080:8080 -p 8081:8081 -e UPSTREAM_URL=ws://api.example.com ghcr.io/enexflow/websocket-multiplex:latest
+```
+
 ## Usage
 
 1. Make sure the WebSocket multiplexer is running on the default port (8080).
