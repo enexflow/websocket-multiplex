@@ -237,6 +237,15 @@ function processQueuedMessages(pathname) {
 			const queuedMessage = messageQueue.shift();
 			upstream.ws.send(queuedMessage.message);
 			
+			if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+				const messageStr = queuedMessage.message.toString();
+				const truncatedMsg = 
+					messageStr.length > 200
+						? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
+						: messageStr;
+				logger.debug(`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg} (dequeued)`);
+			}
+			
 			notifyMasterAboutDequeuedMessage(pathname, queuedMessage);
 		}
 	}
@@ -249,16 +258,20 @@ function processQueuedMessages(pathname) {
  */
 function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "message",
-				direction: "client-to-upstream-dequeued",
-				connectionId,
-				message: queuedMessage.message.toString(),
-				queuedAt: queuedMessage.timestamp,
-				sentAt: new Date().toISOString(),
-			})
-		);
+		const notification = JSON.stringify({
+			type: "message",
+			direction: "client-to-upstream-dequeued",
+			connectionId,
+			message: queuedMessage.message.toString(),
+			queuedAt: queuedMessage.timestamp,
+			sentAt: new Date().toISOString(),
+		});
+		
+		connections.master.send(notification);
+		
+		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+			logger.debug(`multiplexer -> master: message dequeued notification for ${connectionId}`);
+		}
 	}
 }
 
@@ -314,6 +327,15 @@ function queueMessage(pathname, message) {
 		`Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`
 	);
 	
+	if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+		const messageStr = message.toString();
+		const truncatedMsg = 
+			messageStr.length > 200
+				? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
+				: messageStr;
+		logger.debug(`client -> multiplexer on ${pathname}: ${truncatedMsg} (queued)`);
+	}
+	
 	setupMessageTimeout(pathname, queuedMessage);
 }
 
@@ -345,16 +367,25 @@ function setupMessageTimeout(pathname, queuedMessage) {
  */
 function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "message",
-				event: "message-discarded",
-				connectionId,
-				message: queuedMessage.message.toString(),
-				queuedAt: queuedMessage.timestamp,
-				reason: "timeout"
-			})
-		);
+		const notification = JSON.stringify({
+			type: "message",
+			event: "message-discarded",
+			connectionId,
+			message: queuedMessage.message.toString(),
+			queuedAt: queuedMessage.timestamp,
+			reason: "timeout"
+		});
+		
+		connections.master.send(notification);
+		
+		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+			const messageStr = queuedMessage.message.toString();
+			const truncatedMsg = 
+				messageStr.length > 200
+					? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
+					: messageStr;
+			logger.debug(`multiplexer -> master: discarded message notification for ${connectionId}: ${truncatedMsg}`);
+		}
 	}
 }
 
@@ -405,7 +436,14 @@ function logMessageIfDebug(direction, pathname, message) {
 			messageStr.length > 200
 				? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 				: messageStr;
-		logger.debug(`${direction} [${pathname}]: ${truncatedMsg}`);
+		
+		if (direction === "Client → Upstream") {
+			logger.debug(`client -> multiplexer on ${pathname}: ${truncatedMsg}`);
+			logger.debug(`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg}`);
+		} else if (direction === "Upstream → Client") {
+			logger.debug(`${UPSTREAM_URL}${pathname} -> multiplexer: ${truncatedMsg}`);
+			logger.debug(`multiplexer -> client on ${pathname}: ${truncatedMsg}`);
+		}
 	}
 }
 
@@ -424,6 +462,15 @@ function notifyMasterAboutMessage(direction, connectionId, message) {
 			message: message.toString(),
 		};
 		connections.master.send(JSON.stringify(notification));
+		
+		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+			const messageStr = message.toString();
+			const truncatedMsg = 
+				messageStr.length > 200
+					? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
+					: messageStr;
+			logger.debug(`multiplexer -> master: ${truncatedMsg}`);
+		}
 	}
 }
 
