@@ -654,13 +654,13 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
 
 		upstreamWs.on("ping", (data) => {
 			logger.debug(
-				`multiplexer -> ${UPSTREAM_URL}${pathname}: ping (${data?.toString() || "empty"})`,
+				`${UPSTREAM_URL}${pathname} -> multiplexer: ping (${data?.toString() || "empty"})`,
 			);
 		});
 
 		upstreamWs.on("pong", (data) => {
 			logger.debug(
-				`multiplexer -> ${UPSTREAM_URL}${pathname}: pong (${data?.toString() || "empty"})`,
+				`${UPSTREAM_URL}${pathname} -> multiplexer: pong (${data?.toString() || "empty"})`,
 			);
 		});
 
