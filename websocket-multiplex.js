@@ -88,7 +88,7 @@ function initializeWebSocketServers() {
 	// Create WebSocket servers
 	const wss = new WebSocket.Server(wsOptions);
 	const masterWss = new WebSocket.Server(masterWsOptions);
-	
+
 	return { wss, masterWss };
 }
 
@@ -165,9 +165,7 @@ function handleMasterInjection(data) {
 		if (upstream) {
 			upstream.ws.send(data.message);
 		} else {
-			logger.warn(
-				`Upstream ${upstreamId} not found for message injection`,
-			);
+			logger.warn(`Upstream ${upstreamId} not found for message injection`);
 		}
 	}
 }
@@ -180,9 +178,12 @@ function handleMasterInjection(data) {
 function handleMasterMessage(ws, message) {
 	try {
 		const data = JSON.parse(message);
-		logger.debug("Received message from master:", data);
+		const type = data.type;
+		const target = data.target;
+		const contents = data.message;
+		logger.debug(`multiplexer <- master client: ${type} ${target} ${contents}`);
 
-		if (data.type === "inject") {
+		if (type === "inject") {
 			handleMasterInjection(data);
 		}
 	} catch (error) {
@@ -230,22 +231,26 @@ function setupMasterConnection(ws, req) {
 function processQueuedMessages(pathname) {
 	const upstream = connections.upstreams.get(pathname);
 	const messageQueue = connections.messageQueues.get(pathname) || [];
-	
+
 	if (messageQueue.length > 0) {
-		logger.info(`Processing ${messageQueue.length} queued messages for ${pathname}`);
+		logger.info(
+			`Processing ${messageQueue.length} queued messages for ${pathname}`,
+		);
 		while (messageQueue.length > 0) {
 			const queuedMessage = messageQueue.shift();
 			upstream.ws.send(queuedMessage.message);
-			
+
 			if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 				const messageStr = queuedMessage.message.toString();
-				const truncatedMsg = 
+				const truncatedMsg =
 					messageStr.length > 200
 						? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 						: messageStr;
-				logger.debug(`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg} (dequeued)`);
+				logger.debug(
+					`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg} (dequeued)`,
+				);
 			}
-			
+
 			notifyMasterAboutDequeuedMessage(pathname, queuedMessage);
 		}
 	}
@@ -266,11 +271,13 @@ function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
 			queuedAt: queuedMessage.timestamp,
 			sentAt: new Date().toISOString(),
 		});
-		
+
 		connections.master.send(notification);
-		
+
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
-			logger.debug(`multiplexer -> master: message dequeued notification for ${connectionId}`);
+			logger.debug(
+				`multiplexer -> master: message dequeued notification for ${connectionId}`,
+			);
 		}
 	}
 }
@@ -317,25 +324,27 @@ function queueMessage(pathname, message) {
 	const messageQueue = connections.messageQueues.get(pathname) || [];
 	const queuedMessage = {
 		message,
-		timestamp: new Date().toISOString()
+		timestamp: new Date().toISOString(),
 	};
-	
+
 	messageQueue.push(queuedMessage);
 	connections.messageQueues.set(pathname, messageQueue);
-	
+
 	logger.info(
-		`Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`
+		`Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`,
 	);
-	
+
 	if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 		const messageStr = message.toString();
-		const truncatedMsg = 
+		const truncatedMsg =
 			messageStr.length > 200
 				? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 				: messageStr;
-		logger.debug(`client -> multiplexer on ${pathname}: ${truncatedMsg} (queued)`);
+		logger.debug(
+			`client -> multiplexer on ${pathname}: ${truncatedMsg} (queued)`,
+		);
 	}
-	
+
 	setupMessageTimeout(pathname, queuedMessage);
 }
 
@@ -347,8 +356,8 @@ function queueMessage(pathname, message) {
 function setupMessageTimeout(pathname, queuedMessage) {
 	setTimeout(() => {
 		const currentQueue = connections.messageQueues.get(pathname) || [];
-		const index = currentQueue.findIndex(m => m === queuedMessage);
-		
+		const index = currentQueue.findIndex((m) => m === queuedMessage);
+
 		if (index !== -1) {
 			currentQueue.splice(index, 1);
 			logger.warn(
@@ -373,18 +382,20 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 			connectionId,
 			message: queuedMessage.message.toString(),
 			queuedAt: queuedMessage.timestamp,
-			reason: "timeout"
+			reason: "timeout",
 		});
-		
+
 		connections.master.send(notification);
-		
+
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 			const messageStr = queuedMessage.message.toString();
-			const truncatedMsg = 
+			const truncatedMsg =
 				messageStr.length > 200
 					? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 					: messageStr;
-			logger.debug(`multiplexer -> master: discarded message notification for ${connectionId}: ${truncatedMsg}`);
+			logger.debug(
+				`multiplexer -> master: discarded message notification for ${connectionId}: ${truncatedMsg}`,
+			);
 		}
 	}
 }
@@ -436,12 +447,16 @@ function logMessageIfDebug(direction, pathname, message) {
 			messageStr.length > 200
 				? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 				: messageStr;
-		
+
 		if (direction === "Client → Upstream") {
 			logger.debug(`client -> multiplexer on ${pathname}: ${truncatedMsg}`);
-			logger.debug(`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg}`);
+			logger.debug(
+				`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg}`,
+			);
 		} else if (direction === "Upstream → Client") {
-			logger.debug(`${UPSTREAM_URL}${pathname} -> multiplexer: ${truncatedMsg}`);
+			logger.debug(
+				`${UPSTREAM_URL}${pathname} -> multiplexer: ${truncatedMsg}`,
+			);
 			logger.debug(`multiplexer -> client on ${pathname}: ${truncatedMsg}`);
 		}
 	}
@@ -462,10 +477,10 @@ function notifyMasterAboutMessage(direction, connectionId, message) {
 			message: message.toString(),
 		};
 		connections.master.send(JSON.stringify(notification));
-		
+
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 			const messageStr = message.toString();
-			const truncatedMsg = 
+			const truncatedMsg =
 				messageStr.length > 200
 					? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
 					: messageStr;
@@ -702,10 +717,7 @@ function handleUnexpectedResponse(pathname, response) {
 		time: new Date().toISOString(),
 	};
 
-	logger.error(
-		`Unexpected response from upstream ${pathname}:`,
-		statusInfo,
-	);
+	logger.error(`Unexpected response from upstream ${pathname}:`, statusInfo);
 
 	// Status code context
 	if (response.statusCode === 401 || response.statusCode === 403) {
@@ -776,13 +788,19 @@ function setupClientConnection(ws, req) {
 	ws.on("message", (message) => handleClientMessage(ws, pathname, message));
 
 	// Forward messages from upstream to client
-	upstreamWs.on("message", (message) => handleUpstreamMessage(ws, pathname, message));
+	upstreamWs.on("message", (message) =>
+		handleUpstreamMessage(ws, pathname, message),
+	);
 
 	// Handle client disconnection
-	ws.on("close", (code, reason) => handleClientDisconnection(pathname, code, reason));
+	ws.on("close", (code, reason) =>
+		handleClientDisconnection(pathname, code, reason),
+	);
 
 	// Handle upstream disconnection
-	upstreamWs.on("close", (code, reason) => handleUpstreamDisconnection(pathname, code, reason));
+	upstreamWs.on("close", (code, reason) =>
+		handleUpstreamDisconnection(pathname, code, reason),
+	);
 
 	// Handle errors
 	ws.on("error", (error) => {
@@ -847,25 +865,25 @@ function setupProcessEventHandlers() {
  */
 function main() {
 	const { wss, masterWss } = initializeWebSocketServers();
-	
+
 	setupServerEventListeners(wss);
 	setupMasterServerEventListeners(masterWss);
-	
+
 	// Handle master control connections
 	masterWss.on("connection", setupMasterConnection);
-	
+
 	// Handle new WebSocket connections
 	wss.on("connection", setupClientConnection);
-	
+
 	setupProcessEventHandlers();
-	
+
 	// Start the servers
 	server.listen(PORT, () => {
 		logger.info(`WebSocket multiplexer running on port ${PORT}`);
 		logger.info(`Upstream URL: ${UPSTREAM_URL}`);
 		logger.info(`Logging level: ${LOG_LEVEL}`);
 	});
-	
+
 	masterServer.listen(MASTER_PORT, () => {
 		logger.info(`Master control available at: ws://localhost:${MASTER_PORT}`);
 	});
