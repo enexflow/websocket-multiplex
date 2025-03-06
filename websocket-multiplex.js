@@ -130,8 +130,27 @@ function sendStatusToMaster(masterWs) {
 		clients: Array.from(connections.clients.keys()),
 		upstreams: Array.from(connections.upstreams.keys()),
 	};
-	masterWs.send(JSON.stringify(status));
+	sendMessage(masterWs, JSON.stringify(status), "multiplexer", "master");
 	logger.debug("Sent status to master:", status);
+}
+
+/**
+ * Sends a message to a WebSocket connection with logging
+ * @param {WebSocket} ws - The WebSocket connection
+ * @param {*} message - The message to send
+ * @param {string} source - Source identifier (e.g., 'multiplexer')
+ * @param {string} target - Target identifier (e.g., 'client:123')
+ */
+function sendMessage(ws, message, source, target) {
+	ws.send(message);
+	
+	if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+		const messageStr = message.toString();
+		const truncatedMsg = messageStr.length > 200
+			? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
+			: messageStr;
+		logger.debug(`${source} -> ${target}: ${truncatedMsg}`);
+	}
 }
 
 /**
@@ -142,19 +161,19 @@ function handleMasterInjection(data) {
 	if (data.target === "all-clients") {
 		logger.info("Master injecting message to all clients");
 		for (const client of connections.clients.values()) {
-			client.ws.send(data.message);
+			sendMessage(client.ws, data.message, "multiplexer", `client:${client.upstreamId}`);
 		}
 	} else if (data.target === "all-upstreams") {
 		logger.info("Master injecting message to all upstreams");
 		for (const upstream of connections.upstreams.values()) {
-			upstream.ws.send(data.message);
+			sendMessage(upstream.ws, data.message, "multiplexer", `upstream:${upstream.clientId}`);
 		}
 	} else if (data.target.startsWith("client:")) {
 		const clientId = data.target.substring(7);
 		logger.info(`Master injecting message to client: ${clientId}`);
 		const client = connections.clients.get(clientId);
 		if (client) {
-			client.ws.send(data.message);
+			sendMessage(client.ws, data.message, "multiplexer", data.target);
 		} else {
 			logger.warn(`Client ${clientId} not found for message injection`);
 		}
@@ -163,7 +182,7 @@ function handleMasterInjection(data) {
 		logger.info(`Master injecting message to upstream: ${upstreamId}`);
 		const upstream = connections.upstreams.get(upstreamId);
 		if (upstream) {
-			upstream.ws.send(data.message);
+			sendMessage(upstream.ws, data.message, "multiplexer", data.target);
 		} else {
 			logger.warn(`Upstream ${upstreamId} not found for message injection`);
 		}
@@ -238,7 +257,7 @@ function processQueuedMessages(pathname) {
 		);
 		while (messageQueue.length > 0) {
 			const queuedMessage = messageQueue.shift();
-			upstream.ws.send(queuedMessage.message);
+			sendMessage(upstream.ws, queuedMessage.message, "multiplexer", `${UPSTREAM_URL}${pathname}`);
 
 			if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 				const messageStr = queuedMessage.message.toString();
@@ -272,7 +291,7 @@ function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
 			sentAt: new Date().toISOString(),
 		});
 
-		connections.master.send(notification);
+		sendMessage(connections.master, notification, "multiplexer", "master");
 
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 			logger.debug(
@@ -305,13 +324,11 @@ function handleUpstreamOpen(upstreamWs, pathname) {
 
 	// Notify master
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "connection",
-				event: "upstream-connected",
-				connectionId: pathname,
-			}),
-		);
+		sendMessage(connections.master, JSON.stringify({
+			type: "connection",
+			event: "upstream-connected",
+			connectionId: pathname,
+		}), "multiplexer", "master");
 	}
 }
 
@@ -385,7 +402,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 			reason: "timeout",
 		});
 
-		connections.master.send(notification);
+		sendMessage(connections.master, notification, "multiplexer", "master");
 
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 			const messageStr = queuedMessage.message.toString();
@@ -414,7 +431,7 @@ function handleClientMessage(ws, pathname, message) {
 
 	// Forward to upstream if connected
 	if (upstream?.connected) {
-		upstream.ws.send(message);
+		sendMessage(upstream.ws, message, "multiplexer", `${UPSTREAM_URL}${pathname}`);
 	} else {
 		queueMessage(pathname, message);
 	}
@@ -431,7 +448,7 @@ function handleUpstreamMessage(ws, pathname, message) {
 	notifyMasterAboutMessage("upstream-to-client", pathname, message);
 
 	// Forward to client
-	ws.send(message);
+	sendMessage(ws, message, "multiplexer", `client:${pathname}`);
 }
 
 /**
@@ -449,7 +466,7 @@ function logMessageIfDebug(direction, pathname, message) {
 				: messageStr;
 
 		if (direction === "Client → Upstream") {
-			logger.debug(`client -> multiplexer on ${pathname}: ${truncatedMsg}`);
+			logger.debug(`client -> multiplexer:${pathname}: ${truncatedMsg}`);
 			logger.debug(
 				`multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg}`,
 			);
@@ -457,7 +474,7 @@ function logMessageIfDebug(direction, pathname, message) {
 			logger.debug(
 				`${UPSTREAM_URL}${pathname} -> multiplexer: ${truncatedMsg}`,
 			);
-			logger.debug(`multiplexer -> client on ${pathname}: ${truncatedMsg}`);
+			logger.debug(`multiplexer -> client:${pathname}: ${truncatedMsg}`);
 		}
 	}
 }
@@ -476,7 +493,7 @@ function notifyMasterAboutMessage(direction, connectionId, message) {
 			connectionId,
 			message: message.toString(),
 		};
-		connections.master.send(JSON.stringify(notification));
+		sendMessage(connections.master, JSON.stringify(notification), "multiplexer", "master");
 
 		if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 			const messageStr = message.toString();
@@ -522,7 +539,7 @@ function handleClientDisconnection(pathname, code, reason) {
 			code,
 			reason: reason?.toString(),
 		};
-		connections.master.send(JSON.stringify(notification));
+		sendMessage(connections.master, JSON.stringify(notification), "multiplexer", "master");
 		logger.debug("Notified master of client disconnection:", notification);
 	}
 }
@@ -549,14 +566,12 @@ function handleUpstreamDisconnection(pathname, code, reason) {
 
 	// Notify master
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "connection",
-				event: "upstream-disconnected",
-				connectionId: pathname,
-				details: closeInfo,
-			}),
-		);
+		sendMessage(connections.master, JSON.stringify({
+			type: "connection",
+			event: "upstream-disconnected",
+			connectionId: pathname,
+			details: closeInfo,
+		}), "multiplexer", "master");
 	}
 
 	// Close client connection if upstream disconnects
@@ -615,14 +630,12 @@ function handleUpstreamError(pathname, error) {
 
 	// Notify master
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "error",
-				source: "upstream",
-				connectionId: pathname,
-				details: errorInfo,
-			}),
-		);
+		sendMessage(connections.master, JSON.stringify({
+			type: "error",
+			source: "upstream",
+			connectionId: pathname,
+			details: errorInfo,
+		}), "multiplexer", "master");
 	}
 }
 
@@ -730,15 +743,13 @@ function handleUnexpectedResponse(pathname, response) {
 
 	// Notify master
 	if (connections.master) {
-		connections.master.send(
-			JSON.stringify({
-				type: "error",
-				source: "upstream",
-				event: "unexpected-response",
-				connectionId: pathname,
-				details: statusInfo,
-			}),
-		);
+		sendMessage(connections.master, JSON.stringify({
+			type: "error",
+			source: "upstream",
+			event: "unexpected-response",
+			connectionId: pathname,
+			details: statusInfo,
+		}), "multiplexer", "master");
 	}
 }
 
