@@ -642,25 +642,25 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
 	if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
 		ws.on("ping", (data) => {
 			logger.debug(
-				`Received ping from client ${pathname}: ${data?.toString() || "empty"}`,
+				`client -> multiplexer on ${pathname}: ping (${data?.toString() || "empty"})`,
 			);
 		});
 
 		ws.on("pong", (data) => {
 			logger.debug(
-				`Received pong from client ${pathname}: ${data?.toString() || "empty"}`,
+				`client -> multiplexer on ${pathname}: pong (${data?.toString() || "empty"})`,
 			);
 		});
 
 		upstreamWs.on("ping", (data) => {
 			logger.debug(
-				`Received ping from upstream ${pathname}: ${data?.toString() || "empty"}`,
+				`multiplexer -> ${UPSTREAM_URL}${pathname}: ping (${data?.toString() || "empty"})`,
 			);
 		});
 
 		upstreamWs.on("pong", (data) => {
 			logger.debug(
-				`Received pong from upstream ${pathname}: ${data?.toString() || "empty"}`,
+				`multiplexer -> ${UPSTREAM_URL}${pathname}: pong (${data?.toString() || "empty"})`,
 			);
 		});
 
