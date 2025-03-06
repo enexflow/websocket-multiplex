@@ -6,18 +6,20 @@ This is a WebSocket multiplexer that acts as a proxy between clients and an upst
 
 The multiplexer can be configured using environment variables:
 
-- `PORT`: The port on which the multiplexer will listen (default: 8080)
+- `PORT`: The port on which the multiplexer will listen for client connections (default: 8080)
+- `MASTER_PORT`: The port on which the master control interface will be available (default: 8081)
 - `UPSTREAM_URL`: The WebSocket server to which connections will be forwarded (default: ws://localhost:9000)
 
 Example:
 ```bash
-PORT=3000 UPSTREAM_URL=ws://api.example.com node websocket-multiplex.js
+PORT=3000 MASTER_PORT=3001 UPSTREAM_URL=ws://api.example.com node websocket-multiplex.js
 ```
 
 ## How It Works
 
-1. The multiplexer creates a WebSocket server that listens for connections
-2. When a client connects to a path (e.g., `/chat`), the multiplexer:
+1. The multiplexer creates a WebSocket server that listens for client connections
+2. A separate WebSocket server is created for the master control interface
+3. When a client connects to a path (e.g., `/chat`), the multiplexer:
    - Creates a connection to the upstream server with the same path
    - Forwards messages between the client and upstream server
    - Reports all activity to the master control connection
@@ -28,7 +30,7 @@ The master control connection allows you to:
 - Monitor all WebSocket connections and messages
 - Inject messages into any client or upstream connection
 
-Connect to the master control at: `ws://localhost:{PORT}/master`
+Connect to the master control at: `ws://localhost:{MASTER_PORT}`
 
 ### Example: Connecting to Master Control
 
@@ -36,7 +38,7 @@ Connect to the master control at: `ws://localhost:{PORT}/master`
 const WebSocket = require('ws');
 
 // Connect to master control
-const master = new WebSocket('ws://localhost:8080/master');
+const master = new WebSocket('ws://localhost:8081');
 
 master.on('open', () => {
   console.log('Connected to master control');

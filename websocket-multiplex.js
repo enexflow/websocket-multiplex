@@ -4,13 +4,16 @@ const url = require('node:url');
 
 // Configuration
 const PORT = process.env.PORT || 8080;
+const MASTER_PORT = process.env.MASTER_PORT || 8081;
 const UPSTREAM_URL = process.env.UPSTREAM_URL || 'ws://localhost:9000';
 
-// Create HTTP server
+// Create HTTP servers
 const server = http.createServer();
+const masterServer = http.createServer();
 
-// Create WebSocket server
+// Create WebSocket servers
 const wss = new WebSocket.Server({ server });
+const masterWss = new WebSocket.Server({ server: masterServer });
 
 // Store all connections
 const connections = {
@@ -19,69 +22,67 @@ const connections = {
   master: null         // master control connection
 };
 
+// Handle master control connections
+masterWss.on('connection', (ws) => {
+  if (connections.master) {
+    connections.master.close(1000, 'New master connection established');
+  }
+  connections.master = ws;
+  console.log('Master control connected');
+  
+  // Send current connection status
+  const status = {
+    type: 'status',
+    clients: Array.from(connections.clients.keys()),
+    upstreams: Array.from(connections.upstreams.keys())
+  };
+  ws.send(JSON.stringify(status));
+  
+  // Handle messages from master
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      
+      if (data.type === 'inject') {
+        // Inject message to a specific client or upstream
+        if (data.target === 'all-clients') {
+          for (const client of connections.clients.values()) {
+            client.ws.send(data.message);
+          }
+        } else if (data.target === 'all-upstreams') {
+          for (const upstream of connections.upstreams.values()) {
+            upstream.ws.send(data.message);
+          }
+        } else if (data.target.startsWith('client:')) {
+          const clientId = data.target.substring(7);
+          const client = connections.clients.get(clientId);
+          if (client) {
+            client.ws.send(data.message);
+          }
+        } else if (data.target.startsWith('upstream:')) {
+          const upstreamId = data.target.substring(9);
+          const upstream = connections.upstreams.get(upstreamId);
+          if (upstream) {
+            upstream.ws.send(data.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error processing master message:', error);
+    }
+  });
+  
+  // Handle master disconnection
+  ws.on('close', () => {
+    console.log('Master control disconnected');
+    connections.master = null;
+  });
+});
+
 // Handle new WebSocket connections
 wss.on('connection', (ws, req) => {
   const pathname = url.parse(req.url).pathname;
   const connectionId = pathname;
-  
-  // Master control connection
-  if (pathname === '/master') {
-    if (connections.master) {
-      connections.master.close(1000, 'New master connection established');
-    }
-    connections.master = ws;
-    console.log(`Master control connected: ${pathname}`);
-    
-    // Send current connection status
-    const status = {
-      type: 'status',
-      clients: Array.from(connections.clients.keys()),
-      upstreams: Array.from(connections.upstreams.keys())
-    };
-    ws.send(JSON.stringify(status));
-    
-    // Handle messages from master
-    ws.on('message', (message) => {
-      try {
-        const data = JSON.parse(message);
-        
-        if (data.type === 'inject') {
-          // Inject message to a specific client or upstream
-          if (data.target === 'all-clients') {
-            for (const client of connections.clients.values()) {
-              client.ws.send(data.message);
-            }
-          } else if (data.target === 'all-upstreams') {
-            for (const upstream of connections.upstreams.values()) {
-              upstream.ws.send(data.message);
-            }
-          } else if (data.target.startsWith('client:')) {
-            const clientId = data.target.substring(7);
-            const client = connections.clients.get(clientId);
-            if (client) {
-              client.ws.send(data.message);
-            }
-          } else if (data.target.startsWith('upstream:')) {
-            const upstreamId = data.target.substring(9);
-            const upstream = connections.upstreams.get(upstreamId);
-            if (upstream) {
-              upstream.ws.send(data.message);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error processing master message:', error);
-      }
-    });
-    
-    // Handle master disconnection
-    ws.on('close', () => {
-      console.log(`Master control disconnected: ${pathname}`);
-      connections.master = null;
-    });
-    
-    return;
-  }
   
   // Regular client connection
   console.log(`Client connected: ${pathname}`);
@@ -213,11 +214,14 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Start the server
+// Start the servers
 server.listen(PORT, () => {
   console.log(`WebSocket multiplexer running on port ${PORT}`);
   console.log(`Forwarding to upstream: ${UPSTREAM_URL}`);
-  console.log(`Master control available at: ws://localhost:${PORT}/master`);
+});
+
+masterServer.listen(MASTER_PORT, () => {
+  console.log(`Master control available at: ws://localhost:${MASTER_PORT}`);
 });
 
 // Handle server shutdown
@@ -238,7 +242,9 @@ process.on('SIGINT', () => {
   }
   
   server.close(() => {
-    console.log('Server shut down');
-    process.exit(0);
+    masterServer.close(() => {
+      console.log('Servers shut down');
+      process.exit(0);
+    });
   });
 });
