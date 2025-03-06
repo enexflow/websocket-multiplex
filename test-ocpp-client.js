@@ -91,7 +91,7 @@ ws.on('open', () => {
 // Handle incoming messages
 ws.on('message', (data) => {
   try {
-    const message = JSON.parse(data);
+    const message = JSON.parse(data.toString());
     console.log('Received message:', JSON.stringify(message));
 
     // Handle different message types
@@ -200,7 +200,7 @@ ws.on('upgrade', (request, socket, head) => {
   console.log('Upgraded: ', request.headers);
 });
 
-ws.on('unexpected-response', (response) => {
+ws.on('unexpected-response', (request, response) => {
   console.log(
     'Unexpected response:',
     response.statusCode,

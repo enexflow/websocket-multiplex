@@ -154,7 +154,7 @@ function injectMessage(target, message) {
 
   ws.on('message', (data) => {
     try {
-      const response = JSON.parse(data);
+      const response = JSON.parse(data.toString());
       console.log(
         'Received response from master server:',
         JSON.stringify(response, null, 2)
