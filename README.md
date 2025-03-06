@@ -213,6 +213,6 @@ node test-ocpp-client.js
 
 You can modify the following variables in the script to change the behavior:
 
-- `MULTIPLEXER_URL`: The URL of the multiplexer (default: ws://localhost:8080)
+- `WS_URL`: The URL of the multiplexer (default: ws://localhost:8080)
 - `CHARGE_POINT_ID`: The ID of the charge point (default: CP001)
 - `OCPP_VERSION`: The OCPP version to use (default: 1.6)
