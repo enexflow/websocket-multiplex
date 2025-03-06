@@ -9,16 +9,22 @@ graph TD
         M[Multiplexer :8080]
         MC[Master Control :8081]
     end
+
+    subgraph "Websocket Server"
+        U1[ /path1]
+        U2[ /path2]
+    end
+
     
     C1[Client 1: /path1] -->|ws://localhost:8080/path1| M
     C2[Client 2: /path2] -->|ws://localhost:8080/path2| M
     
-    M -->|ws://upstream:9000/path1| U1[Upstream: /path1]
-    M -->|ws://upstream:9000/path2| U2[Upstream: /path2]
+    M -->|ws://upstream:9000/path1| U1
+    M -->|ws://upstream:9000/path2| U2
     
-    M <-->|Reports all traffic| MC
+    M -->|Reports all traffic| MC
     
-    Admin[Administrator] -->|ws://localhost:8081| MC
+    Admin[Administrator] <-->|ws://localhost:8081| MC
     MC -->| Inject| M
 ```
 
