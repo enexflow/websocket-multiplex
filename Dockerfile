@@ -5,10 +5,10 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Copy the application code
-COPY websocket-multiplex.js ./
+COPY websocket-multiplex.js  package.json package-lock.json ./
 
 # Install necessary dependencies
-RUN npm install ws
+RUN npm install
 
 # Expose the port the app runs on
 EXPOSE 8080

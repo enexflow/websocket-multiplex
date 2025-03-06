@@ -41,161 +41,161 @@
  *   For OCPP messages, this would typically be an array in the format [messageTypeId, messageId, action, payload].
  */
 
-const WebSocket = require("ws");
-const fs = require("node:fs");
-const path = require("node:path");
+const WebSocket = require('ws');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Configuration
-const MASTER_URL = process.env.MASTER_URL || "ws://localhost:8081";
-const TIMEOUT = Number.parseInt(process.env.TIMEOUT || "5000", 10);
+const MASTER_URL = process.env.MASTER_URL || 'ws://localhost:8081';
+const TIMEOUT = Number.parseInt(process.env.TIMEOUT || '5000', 10);
 
 // Parse command line arguments
 function parseArgs() {
-	if (process.argv.length !== 3) {
-		console.error("Error: Invalid number of arguments");
-		console.error(
-			"Usage: node test-ws-injection.js <target>:<message_file_path>",
-		);
-		process.exit(1);
-	}
+  if (process.argv.length !== 3) {
+    console.error('Error: Invalid number of arguments');
+    console.error(
+      'Usage: node test-ws-injection.js <target>:<message_file_path>'
+    );
+    process.exit(1);
+  }
 
-	const arg = process.argv[2];
-	const parts = arg.split(":");
+  const arg = process.argv[2];
+  const parts = arg.split(':');
 
-	if (parts.length < 2) {
-		console.error("Error: Invalid argument format");
-		console.error(
-			"Usage: node test-ws-injection.js <target>:<message_file_path>",
-		);
-		process.exit(1);
-	}
+  if (parts.length < 2) {
+    console.error('Error: Invalid argument format');
+    console.error(
+      'Usage: node test-ws-injection.js <target>:<message_file_path>'
+    );
+    process.exit(1);
+  }
 
-	// Handle the case where the target might contain colons (e.g., client:/path:file.json)
-	const filePath = parts.pop();
-	const target = parts.join(":");
+  // Handle the case where the target might contain colons (e.g., client:/path:file.json)
+  const filePath = parts.pop();
+  const target = parts.join(':');
 
-	// Validate target
-	const validTargets = ["all-clients", "all-upstreams"];
-	const validPrefixes = ["client:", "upstream:"];
+  // Validate target
+  const validTargets = ['all-clients', 'all-upstreams'];
+  const validPrefixes = ['client:', 'upstream:'];
 
-	const isValidTarget =
-		validTargets.includes(target) ||
-		validPrefixes.some((prefix) => target.startsWith(prefix));
+  const isValidTarget =
+    validTargets.includes(target) ||
+    validPrefixes.some((prefix) => target.startsWith(prefix));
 
-	if (!isValidTarget) {
-		console.error("Error: Invalid target");
-		console.error(
-			"Valid targets: client:<id>, upstream:<id>, all-clients, all-upstreams",
-		);
-		process.exit(1);
-	}
+  if (!isValidTarget) {
+    console.error('Error: Invalid target');
+    console.error(
+      'Valid targets: client:<id>, upstream:<id>, all-clients, all-upstreams'
+    );
+    process.exit(1);
+  }
 
-	return { target, filePath };
+  return { target, filePath };
 }
 
 // Read message from file
 function readMessageFile(filePath) {
-	try {
-		const resolvedPath = path.resolve(filePath);
-		console.log(`Reading message from: ${resolvedPath}`);
+  try {
+    const resolvedPath = path.resolve(filePath);
+    console.log(`Reading message from: ${resolvedPath}`);
 
-		return fs.readFileSync(resolvedPath, "utf8");
-	} catch (error) {
-		if (error.code === "ENOENT") {
-			console.error(`Error: File not found: ${filePath}`);
-		} else if (error instanceof SyntaxError) {
-			console.error(`Error: Invalid JSON in file: ${filePath}`);
-			console.error(error.message);
-		} else {
-			console.error(`Error reading file: ${error.message}`);
-		}
-		process.exit(1);
-	}
+    return fs.readFileSync(resolvedPath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.error(`Error: File not found: ${filePath}`);
+    } else if (error instanceof SyntaxError) {
+      console.error(`Error: Invalid JSON in file: ${filePath}`);
+      console.error(error.message);
+    } else {
+      console.error(`Error reading file: ${error.message}`);
+    }
+    process.exit(1);
+  }
 }
 
 // Connect to master server and inject message
 function injectMessage(target, message) {
-	console.log(`Connecting to master server at ${MASTER_URL}`);
+  console.log(`Connecting to master server at ${MASTER_URL}`);
 
-	const ws = new WebSocket(MASTER_URL);
-	let connectionClosed = false;
+  const ws = new WebSocket(MASTER_URL);
+  let connectionClosed = false;
 
-	// Set connection timeout
-	const timeoutId = setTimeout(() => {
-		if (!connectionClosed) {
-			console.error(`Connection timeout after ${TIMEOUT}ms`);
-			ws.close();
-			process.exit(1);
-		}
-	}, TIMEOUT);
+  // Set connection timeout
+  const timeoutId = setTimeout(() => {
+    if (!connectionClosed) {
+      console.error(`Connection timeout after ${TIMEOUT}ms`);
+      ws.close();
+      process.exit(1);
+    }
+  }, TIMEOUT);
 
-	ws.on("open", () => {
-		console.log("Connected to master server");
+  ws.on('open', () => {
+    console.log('Connected to master server');
 
-		// Create injection message
-		const injectionMessage = {
-			type: "inject",
-			target,
-			message,
-		};
+    // Create injection message
+    const injectionMessage = {
+      type: 'inject',
+      target,
+      message,
+    };
 
-		console.log(`Injecting message to target: ${target}`);
-		console.log("Message payload:", message);
+    console.log(`Injecting message to target: ${target}`);
+    console.log('Message payload:', message);
 
-		// Send the injection message
-		ws.send(JSON.stringify(injectionMessage));
+    // Send the injection message
+    ws.send(JSON.stringify(injectionMessage));
 
-		// Wait a bit before closing to ensure message is processed
-		setTimeout(() => {
-			console.log("Message sent successfully");
-			ws.close(1000, "Injection complete");
-		}, 500);
-	});
+    // Wait a bit before closing to ensure message is processed
+    setTimeout(() => {
+      console.log('Message sent successfully');
+      ws.close(1000, 'Injection complete');
+    }, 500);
+  });
 
-	ws.on("message", (data) => {
-		try {
-			const response = JSON.parse(data);
-			console.log(
-				"Received response from master server:",
-				JSON.stringify(response, null, 2),
-			);
-		} catch (error) {
-			console.log("Received non-JSON response:", data.toString());
-		}
-	});
+  ws.on('message', (data) => {
+    try {
+      const response = JSON.parse(data);
+      console.log(
+        'Received response from master server:',
+        JSON.stringify(response, null, 2)
+      );
+    } catch (error) {
+      console.log('Received non-JSON response:', data.toString());
+    }
+  });
 
-	ws.on("error", (error) => {
-		console.error("WebSocket error:", error.message);
-		clearTimeout(timeoutId);
-		process.exit(1);
-	});
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error.message);
+    clearTimeout(timeoutId);
+    process.exit(1);
+  });
 
-	ws.on("close", (code, reason) => {
-		connectionClosed = true;
-		clearTimeout(timeoutId);
+  ws.on('close', (code, reason) => {
+    connectionClosed = true;
+    clearTimeout(timeoutId);
 
-		const reasonStr = reason ? reason.toString() : "No reason provided";
-		console.log(`Connection closed. Code: ${code}, Reason: ${reasonStr}`);
-		process.exit(0);
-	});
+    const reasonStr = reason ? reason.toString() : 'No reason provided';
+    console.log(`Connection closed. Code: ${code}, Reason: ${reasonStr}`);
+    process.exit(0);
+  });
 }
 
 // Main function
 function main() {
-	try {
-		const { target, filePath } = parseArgs();
-		const message = readMessageFile(filePath);
-		injectMessage(target, message);
-	} catch (error) {
-		console.error("Unexpected error:", error);
-		process.exit(1);
-	}
+  try {
+    const { target, filePath } = parseArgs();
+    const message = readMessageFile(filePath);
+    injectMessage(target, message);
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    process.exit(1);
+  }
 }
 
 // Handle process termination
-process.on("SIGINT", () => {
-	console.log("Process interrupted");
-	process.exit(0);
+process.on('SIGINT', () => {
+  console.log('Process interrupted');
+  process.exit(0);
 });
 
 // Start the script

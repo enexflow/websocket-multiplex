@@ -5,10 +5,19 @@
   "main": "test-ocpp-client.js",
   "scripts": {
     "start": "node websocket-multiplex.js",
-    "test": "node test-ocpp-client.js"
+    "test": "node test-ocpp-client.js",
+    "type-check": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "lint": "node ./node_modules/@biomejs/biome/bin/biome check .",
+    "format": "node ./node_modules/@biomejs/biome/bin/biome format . --write"
   },
   "dependencies": {
-    "ws": "^8.13.0",
-    "uuid": "^9.0.0"
+    "ws": "^8.13.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.17.23",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.3"
   }
 }
