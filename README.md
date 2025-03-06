@@ -12,9 +12,17 @@ The multiplexer can be configured using environment variables:
 - `LOG_LEVEL`: Controls the verbosity of logging (default: INFO)
 - `MESSAGE_QUEUE_TIMEOUT`: Time in milliseconds before queued messages are discarded (default: 30000)
 
-Example:
+## Example (using docker)
+
+You can run the WebSocket multiplexer using Docker:
+
 ```bash
-PORT=3000 MASTER_PORT=3001 UPSTREAM_URL=ws://api.example.com node websocket-multiplex.js
+docker run \
+  -p 8080:8080 \
+  -p 8081:8081 \
+  -e UPSTREAM_URL=wss://echo.websocket.org \
+  -e LOG_LEVEL=DEBUG \
+  ghcr.io/enexflow/websocket-multiplex:latest
 ```
 
 ## Logging
@@ -186,14 +194,6 @@ This is a simple test client that connects to the WebSocket multiplexer and simu
 
 ```bash
 npm install
-```
-
-## Docker
-
-You can run the WebSocket multiplexer using Docker:
-
-```bash
-docker run -p 8080:8080 -p 8081:8081 -e UPSTREAM_URL=ws://api.example.com ghcr.io/enexflow/websocket-multiplex:latest
 ```
 
 ## Usage
