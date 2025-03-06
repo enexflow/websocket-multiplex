@@ -771,12 +771,10 @@ function setupClientConnection(ws, req) {
 
 	// Connect to upstream
 	const upstreamUrl = UPSTREAM_URL + pathname;
-	logger.info(`Connecting to upstream: ${upstreamUrl}`);
-	const upstreamWs = new WebSocket(upstreamUrl, [
-		"ocpp1.6", // Common OCPP subprotocols
-		"ocpp2.0",
-		"ocpp2.0.1",
-	]);
+  const protocol_string = req.headers["sec-websocket-protocol"] || "";
+  const protocols = protocol_string.split(/,\s*/);
+	logger.info(`Connecting to upstream: ${upstreamUrl} using protocols: ${protocols}`);
+	const upstreamWs = new WebSocket(upstreamUrl, protocols);
 
 	// Store connection info
 	connections.clients.set(pathname, {
