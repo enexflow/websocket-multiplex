@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 8080;
 const MASTER_PORT = process.env.MASTER_PORT || 8081;
 const UPSTREAM_URL = process.env.UPSTREAM_URL || "ws://localhost:9000";
 const LOG_LEVEL = process.env.LOG_LEVEL || "INFO";
+const MESSAGE_QUEUE_TIMEOUT = process.env.MESSAGE_QUEUE_TIMEOUT || 30000; // 30 seconds default
 
 // Logging levels
 const LOG_LEVELS = {
@@ -76,6 +77,7 @@ const connections = {
 	clients: new Map(), // client connections
 	upstreams: new Map(), // upstream connections
 	master: null, // master control connection
+	messageQueues: new Map(), // queued messages for connections not yet established
 };
 
 // Log WebSocket server events
@@ -182,6 +184,9 @@ wss.on("connection", (ws, req) => {
 	logger.info(`Client connected: ${pathname} from ${ip}`);
 	logger.info("Client connection headers:", req.headers);
 
+	// Initialize message queue for this connection
+	connections.messageQueues.set(pathname, []);
+
 	// Connect to upstream
 	const upstreamUrl = UPSTREAM_URL + pathname;
 	logger.info(`Connecting to upstream: ${upstreamUrl}`);
@@ -219,6 +224,30 @@ wss.on("connection", (ws, req) => {
 			url: upstreamUrl,
 			protocol: upstreamWs.protocol,
 		});
+
+		// Process any queued messages
+		const messageQueue = connections.messageQueues.get(pathname) || [];
+		if (messageQueue.length > 0) {
+			logger.info(`Processing ${messageQueue.length} queued messages for ${pathname}`);
+			while (messageQueue.length > 0) {
+				const queuedMessage = messageQueue.shift();
+				upstream.ws.send(queuedMessage.message);
+				
+				// Notify master about dequeued message if needed
+				if (connections.master) {
+					connections.master.send(
+						JSON.stringify({
+							type: "message",
+							direction: "client-to-upstream-dequeued",
+							connectionId,
+							message: queuedMessage.message.toString(),
+							queuedAt: queuedMessage.timestamp,
+							sentAt: new Date().toISOString(),
+						})
+					);
+				}
+			}
+		}
 
 		// Notify master
 		if (connections.master) {
@@ -260,9 +289,46 @@ wss.on("connection", (ws, req) => {
 		if (upstream?.connected) {
 			upstream.ws.send(message);
 		} else {
-			logger.warn(
-				`Cannot forward message to upstream for ${pathname}: not connected`,
+			// Queue the message for later delivery
+			const messageQueue = connections.messageQueues.get(pathname) || [];
+			const queuedMessage = {
+				message,
+				timestamp: new Date().toISOString()
+			};
+			
+			messageQueue.push(queuedMessage);
+			connections.messageQueues.set(pathname, messageQueue);
+			
+			logger.info(
+				`Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`
 			);
+			
+			// Set a timeout to discard the message if connection doesn't establish
+			setTimeout(() => {
+				const currentQueue = connections.messageQueues.get(pathname) || [];
+				const index = currentQueue.findIndex(m => m === queuedMessage);
+				
+				if (index !== -1) {
+					currentQueue.splice(index, 1);
+					logger.warn(
+						`Message for ${upstreamUrl} timed out after ${MESSAGE_QUEUE_TIMEOUT}ms and was discarded`,
+					);
+
+					// Notify master about discarded message
+					if (connections.master) {
+						connections.master.send(
+							JSON.stringify({
+								type: "message",
+								event: "message-discarded",
+								connectionId,
+								message: queuedMessage.message.toString(),
+								queuedAt: queuedMessage.timestamp,
+								reason: "timeout"
+							})
+						);
+					}
+				}
+			}, MESSAGE_QUEUE_TIMEOUT);
 		}
 	});
 
@@ -298,6 +364,9 @@ wss.on("connection", (ws, req) => {
 			`Client disconnected: ${pathname}. Code: ${code}, Reason: ${reason || "No reason provided"}`,
 		);
 
+		// Clear message queue
+		connections.messageQueues.delete(pathname);
+
 		// Close upstream connection
 		const upstream = connections.upstreams.get(pathname);
 		if (upstream) {
@@ -331,6 +400,9 @@ wss.on("connection", (ws, req) => {
 		};
 
 		logger.info(`Upstream disconnected for client ${pathname}:`, closeInfo);
+
+		// Clear message queue
+		connections.messageQueues.delete(pathname);
 
 		// Log important close codes
 		const closeMessages = {
