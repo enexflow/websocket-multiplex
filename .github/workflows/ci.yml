@@ -25,32 +25,7 @@ jobs:
       
       - name: Install dependencies
         run: npm ci
-      
-      - name: Install TypeScript
-        run: npm install --save-dev typescript @types/node @types/ws @types/uuid
-      
-      - name: Create tsconfig.json if it doesn't exist
-        run: |
-          if [ ! -f tsconfig.json ]; then
-            echo '{
-              "compilerOptions": {
-                "target": "es2020",
-                "module": "commonjs",
-                "allowJs": true,
-                "checkJs": true,
-                "outDir": "./dist",
-                "strict": false,
-                "noImplicitAny": false,
-                "esModuleInterop": true,
-                "resolveJsonModule": true,
-                "skipLibCheck": true,
-                "forceConsistentCasingInFileNames": true
-              },
-              "include": ["*.js"],
-              "exclude": ["node_modules", "dist"]
-            }' > tsconfig.json
-          fi
-      
+
       - name: Run type check
         run: npx tsc --noEmit
   
@@ -91,7 +66,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: .
+          context: "."
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

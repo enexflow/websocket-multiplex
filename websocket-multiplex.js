@@ -902,11 +902,13 @@ function shutdownServer() {
   // Close all connections
   logger.debug(`Closing ${connections.clients.size} client connections`);
   for (const client of connections.clients.values()) {
+    logger.debug(`Closing client connection for ${client.upstreamId}`);
     client.ws.close(1000, 'Server shutting down');
   }
 
   logger.debug(`Closing ${connections.upstreams.size} upstream connections`);
   for (const upstream of connections.upstreams.values()) {
+    logger.debug(`Closing upstream connection for ${upstream.clientId}`);
     upstream.ws.close(1000, 'Server shutting down');
   }
 
