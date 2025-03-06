@@ -9,10 +9,57 @@ The multiplexer can be configured using environment variables:
 - `PORT`: The port on which the multiplexer will listen for client connections (default: 8080)
 - `MASTER_PORT`: The port on which the master control interface will be available (default: 8081)
 - `UPSTREAM_URL`: The WebSocket server to which connections will be forwarded (default: ws://localhost:9000)
+- `LOG_LEVEL`: Controls the verbosity of logging (default: INFO)
+- `MESSAGE_QUEUE_TIMEOUT`: Time in milliseconds before queued messages are discarded (default: 30000)
 
 Example:
 ```bash
 PORT=3000 MASTER_PORT=3001 UPSTREAM_URL=ws://api.example.com node websocket-multiplex.js
+```
+
+## Logging
+
+The multiplexer includes a comprehensive logging system with multiple verbosity levels:
+
+- `ERROR`: Only critical errors are logged
+- `WARN`: Errors and warnings are logged
+- `INFO`: General operational information (default)
+- `DEBUG`: Detailed information including message contents and connection events
+
+You can set the logging level using the `LOG_LEVEL` environment variable:
+
+```bash
+LOG_LEVEL=DEBUG node websocket-multiplex.js
+```
+
+### Debug Logging
+
+When `LOG_LEVEL` is set to `DEBUG`, the multiplexer provides detailed information about:
+
+- Message contents (truncated if longer than 200 bytes)
+- WebSocket protocol events (ping/pong)
+- Connection upgrades
+- Headers and status codes
+- Queued message handling
+
+Example debug log output:
+```
+[DEBUG] client -> multiplexer on /chat: {"id":"123","message":"Hello"}
+[DEBUG] multiplexer -> ws://localhost:9000/chat: {"id":"123","message":"Hello"}
+[DEBUG] Received ping from client /chat: empty
+```
+
+### Message Queuing
+
+If a client sends messages before the upstream connection is established, messages are queued and:
+
+- Held for delivery until the upstream connection is ready
+- Discarded after the timeout period (default: 30 seconds)
+- Logged with appropriate notifications to the master control
+
+Example:
+```bash
+MESSAGE_QUEUE_TIMEOUT=60000 node websocket-multiplex.js
 ```
 
 ## How It Works
