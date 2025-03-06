@@ -123,12 +123,12 @@ masterWss.on('connection', (ws, req) => {
       if (data.type === 'inject') {
         // Inject message to a specific client or upstream
         if (data.target === 'all-clients') {
-          logger.info(`Master injecting message to all clients`);
+          logger.info("Master injecting message to all clients");
           for (const client of connections.clients.values()) {
             client.ws.send(data.message);
           }
         } else if (data.target === 'all-upstreams') {
-          logger.info(`Master injecting message to all upstreams`);
+          logger.info("Master injecting message to all upstreams");
           for (const upstream of connections.upstreams.values()) {
             upstream.ws.send(data.message);
           }
@@ -175,11 +175,12 @@ wss.on('connection', (ws, req) => {
   const connectionId = pathname;
   
   logger.info(`Client connected: ${pathname} from ${ip}`);
-  logger.debug('Client connection headers:', req.headers);
+  logger.info('Client connection headers:', req.headers);
   
   // Connect to upstream
-  logger.debug(`Connecting to upstream: ${UPSTREAM_URL}/${pathname}`);
-  const upstreamWs = new WebSocket(`${UPSTREAM_URL}/${pathname}`);
+  const upstreamUrl = UPSTREAM_URL + pathname;
+  logger.info(`Connecting to upstream: ${upstreamUrl}`);
+  const upstreamWs = new WebSocket(upstreamUrl);
   
   // Store connection info
   connections.clients.set(pathname, { 
@@ -360,7 +361,7 @@ wss.on('connection', (ws, req) => {
 // Start the servers
 server.listen(PORT, () => {
   logger.info(`WebSocket multiplexer running on port ${PORT}`);
-  logger.info(`Forwarding to upstream: ${UPSTREAM_URL}`);
+  logger.info(`Upstream URL: ${UPSTREAM_URL}`);
   logger.info(`Logging level: ${LOG_LEVEL}`);
 });
 

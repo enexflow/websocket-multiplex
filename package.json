@@ -1,25 +1,14 @@
 {
-  "name": "webocket-multiplexer",
+  "name": "ocpp-multiplexer-test",
   "version": "1.0.0",
-  "description": "This is a WebSocket multiplexer that acts as a proxy between clients and an upstream WebSocket server. It allows you to monitor and manipulate WebSocket traffic through a master control connection.",
-  "main": "websocket-multiplex.js",
+  "description": "Test client for WebSocket multiplexer with OCPP",
+  "main": "test-ocpp-client.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node websocket-multiplex.js",
+    "test": "node test-ocpp-client.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+ssh://git@gist.github.com/7d2a9841f81af082f2e6d643af6f313c.git"
-  },
-  "keywords": [
-    "websocket"
-  ],
-  "author": "Ophir Lojkine",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://gist.github.com/7d2a9841f81af082f2e6d643af6f313c"
-  },
-  "homepage": "https://gist.github.com/7d2a9841f81af082f2e6d643af6f313c",
   "dependencies": {
-    "ws": "^8.18.1"
+    "ws": "^8.13.0",
+    "uuid": "^9.0.0"
   }
 }

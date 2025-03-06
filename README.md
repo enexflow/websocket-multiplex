@@ -123,3 +123,49 @@ master.send(JSON.stringify({
 - Implementing custom protocol transformations
 - Monitoring WebSocket traffic
 - Creating a WebSocket gateway with custom logic
+
+# OCPP WebSocket Multiplexer Test Client
+
+This is a simple test client that connects to the WebSocket multiplexer and simulates an OCPP (Open Charge Point Protocol) session.
+
+## Prerequisites
+
+- Node.js (v14 or later)
+- npm
+
+## Installation
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+## Usage
+
+1. Make sure the WebSocket multiplexer is running on the default port (8080).
+
+2. Run the test client:
+
+```bash
+node test-ocpp-client.js
+```
+
+## What the Test Does
+
+1. Connects to the multiplexer with a charge point ID "CP001"
+2. Sends a BootNotification message
+3. Sends a Heartbeat message after 5 seconds
+4. Sends a StatusNotification after 10 seconds
+5. Sends MeterValues after receiving a BootNotification response
+6. Handles incoming messages from the server
+7. Responds to Reset and RemoteStartTransaction commands
+8. Sends a StopTransaction message when the process is terminated (Ctrl+C)
+
+## Configuration
+
+You can modify the following variables in the script to change the behavior:
+
+- `MULTIPLEXER_URL`: The URL of the multiplexer (default: ws://localhost:8080)
+- `CHARGE_POINT_ID`: The ID of the charge point (default: CP001)
+- `OCPP_VERSION`: The OCPP version to use (default: 1.6)
