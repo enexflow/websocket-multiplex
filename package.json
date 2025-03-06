@@ -2,7 +2,7 @@
   "name": "ocpp-multiplexer-test",
   "version": "1.0.0",
   "description": "Test client for WebSocket multiplexer with OCPP",
-  "main": "test-ocpp-client.js",
+  "main": "websocket-multiplex.js",
   "scripts": {
     "start": "node websocket-multiplex.js",
     "test": "node test-ocpp-client.js",
