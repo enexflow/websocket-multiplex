@@ -840,11 +840,11 @@ function setupClientConnection(ws, req) {
   // Connect to upstream
   const upstreamUrl = UPSTREAM_URL + pathname;
   const protocol_string = req.headers['sec-websocket-protocol'] || '';
-  const protocols = protocol_string.split(/,\s*/);
+  const protocols = protocol_string.split(/,\s*/).filter(p => p.trim() !== '');
   logger.info(
     `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols}`
   );
-  const upstreamWs = new WebSocket(upstreamUrl, protocols);
+  const upstreamWs = new WebSocket(upstreamUrl, protocols.length > 0 ? protocols : undefined);
 
   // Store connection info
   connections.clients.set(pathname, {

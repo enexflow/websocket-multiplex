@@ -28,7 +28,10 @@ jobs:
 
       - name: Run type check
         run: npx tsc --noEmit
-  
+
+      - name: Run tests
+        run: npm test
+
   build-and-push:
     needs: type-check
     runs-on: ubuntu-latest

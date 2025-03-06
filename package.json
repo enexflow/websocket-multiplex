@@ -1,11 +1,11 @@
 {
   "name": "ocpp-multiplexer-test",
   "version": "1.0.0",
-  "description": "Test client for WebSocket multiplexer with OCPP",
+  "description": "A websocket proxy which allows MITM through a third-party websocket connection",
   "main": "websocket-multiplex.js",
   "scripts": {
     "start": "node websocket-multiplex.js",
-    "test": "node test-ocpp-client.js",
+    "test": "node test-websocket-multiplexer.js",
     "type-check": "tsc --noEmit",
     "build": "tsc --noEmit",
     "lint": "node ./node_modules/@biomejs/biome/bin/biome check .",
