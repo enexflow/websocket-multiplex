@@ -3,25 +3,24 @@
   "5f9a9a97-b0b3-4392-8b2e-63a1c8c7eb28",
   "SetChargingProfile",
   {
-    "evseId": 0,
-    "chargingProfile": {
-      "id": 158798,
-      "stackLevel": 1,
-      "chargingProfilePurpose": "TxProfile",
-      "chargingProfileKind": "Absolute",
-      "chargingSchedule": [
-        {
-          "id": 1,
-          "chargingRateUnit": "W",
-          "chargingSchedulePeriod": [
-            {
-              "startPeriod": 0,
-              "limit": 999999
-            }
-          ]
-        }
-      ],
-      "transactionId": "1234"
+    "connectorId": 1,
+    "csChargingProfiles": {
+           "chargingProfileId": 26771,
+           "chargingProfileKind": "Absolute",
+           "chargingProfilePurpose": "TxProfile",
+           "chargingSchedule": {
+                   "startSchedule": "2025-03-07T09:33:00.000Z",
+                   "chargingRateUnit": "W",
+                   "chargingSchedulePeriod": [
+                          {
+                                   "limit": 20000,
+                                   "startPeriod": 0
+                          }
+                   ],
+                   "duration": 86400
+           },
+           "stackLevel": 1,
+           "transactionId": 33404424
     }
-  }
+}
 ]
