@@ -113,6 +113,25 @@ The master control connection allows you to:
 
 Connect to the master control at: `ws://localhost:{MASTER_PORT}`
 
+### Example: Multiplex a specific connection
+
+```javascript
+// Monitor raw messages from a specific client
+const clientMonitor = new WebSocket('ws://localhost:8081/client/chat');
+clientMonitor.on('message', (data) => {
+  console.log('Raw client message:', data.toString());
+});
+// Send a message to all clients connected on /chat on the upstream
+clientMonitor.send("Hello chat clients");
+
+// Monitor raw messages from a specific upstream
+const upstreamMonitor = new WebSocket('ws://localhost:8081/upstream/chat');
+upstreamMonitor.on('message', (data) => {
+  console.log('Raw upstream message:', data.toString());
+});
+upstreamMonitor.send("Hello chat server");
+```
+
 ### Example: Connecting to Master Control
 
 ```javascript
