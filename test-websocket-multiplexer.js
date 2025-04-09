@@ -110,7 +110,7 @@ class TestServer {
     this.lastRequestHeaders = {};
 
     this.wss.on('connection', (ws, req) => {
-      console.log(`[TEST SERVER] Client connected on path: ${req.url}`);
+      console.log(`[TEST SERVER] Client connected on path: ${req.url} with headers: ${JSON.stringify(req.headers)}`);
       this.connections.set(req.url, ws);
       this.lastRequestHeaders = req.headers;
 
@@ -502,7 +502,7 @@ class TestRunner {
   async runTests() {
     console.log('\nRunning WebSocket Multiplexer Tests...\n');
 
-    const testHeaders = { authorization: 'Bearer test-token' };
+    const testHeaders = { authorization: 'TestTestTest' };
 
     // Setup clients
     const client = new WebSocketClient(
@@ -526,10 +526,6 @@ class TestRunner {
       masterUpstreamMonitor.connect(),
     ]);
 
-    // Test 0: Header forwarding
-    console.log('Test: Header forwarding');
-    assert.equal(this.upstream.lastRequestHeaders.authorization, testHeaders.authorization);
-
     // Test 1: Client to upstream communication
     console.log('Test: Client to upstream communication');
     const clientMsg = randomMessage('client->upstream');
@@ -544,6 +540,9 @@ class TestRunner {
     await client.send(clientMsg);
     assert.equal(await this.upstream.receiveMessage(), clientMsg);
     assert.equal(await masterUpstreamMonitor.receiveMessage(), clientMsg);
+
+    console.log('Test: Header forwarding');
+    assert.equal(this.upstream.lastRequestHeaders.authorization, testHeaders.authorization);
 
     // Consume the client-to-upstream message notification
     const clientToUpstreamMsg = await masterControl.receiveMessage();
