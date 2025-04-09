@@ -106,10 +106,13 @@ class TestServer {
     this.messageQueue = [];
     /** @type {Map<string, WebSocket>} */
     this.connections = new Map();
+    /** @type {http.IncomingHttpHeaders} */
+    this.lastRequestHeaders = {};
 
     this.wss.on('connection', (ws, req) => {
       console.log(`[TEST SERVER] Client connected on path: ${req.url}`);
       this.connections.set(req.url, ws);
+      this.lastRequestHeaders = req.headers;
 
       ws.on('message', (message) => {
         const messageStr = message.toString();
@@ -385,15 +388,16 @@ function withTimeout(promise, ms, errorMessage) {
 
 // WebSocket client for testing
 class WebSocketClient {
-  constructor(url) {
+  constructor(url, headers = {}) {
     this.url = url;
     this.messageQueue = [];
     this.ws = null;
+    this.headers = headers;
   }
 
   connect() {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.url, { headers: this.headers });
 
       this.ws.on('open', () => {
         console.log(`[WebSocketClient] Connected to ${this.url}`);
@@ -494,12 +498,16 @@ class TestRunner {
     await wait(500);
   }
 
+
   async runTests() {
     console.log('\nRunning WebSocket Multiplexer Tests...\n');
 
+    const testHeaders = { authorization: 'Bearer test-token' };
+
     // Setup clients
     const client = new WebSocketClient(
-      `ws://localhost:${this.config.PROXY_PORT}${this.config.TEST_PATH}`
+      `ws://localhost:${this.config.PROXY_PORT}${this.config.TEST_PATH}`,
+      testHeaders
     );
     const masterControl = new WebSocketClient(
       `ws://localhost:${this.config.MASTER_PORT}/`
@@ -517,6 +525,10 @@ class TestRunner {
       masterClientMonitor.connect(),
       masterUpstreamMonitor.connect(),
     ]);
+
+    // Test 0: Header forwarding
+    console.log('Test: Header forwarding');
+    assert.equal(this.upstream.lastRequestHeaders.authorization, testHeaders.authorization);
 
     // Test 1: Client to upstream communication
     console.log('Test: Client to upstream communication');
