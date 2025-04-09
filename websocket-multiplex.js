@@ -902,12 +902,13 @@ function setupClientConnection(ws, req) {
   const protocols = protocol_string
     .split(/,\s*/)
     .filter((p) => p.trim() !== '');
-  logger.info(
-    `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols}`
-  );
+
   const options = {
     headers: prepareUpstreamHeaders(req.headers),
   };
+  logger.info(
+    `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols} and options: ${JSON.stringify(options)}`
+  );
   const upstreamWs = new WebSocket(
     upstreamUrl,
     protocols.length > 0 ? protocols : undefined,
