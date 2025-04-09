@@ -42,7 +42,12 @@ jobs:
 
       - name: Get current branch name
         id: branch
-        run: echo "branch=$(echo ${GITHUB_REF:-dev} | sed s/.*\\///g)" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "branch=${{ github.base_ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "branch=$(echo ${GITHUB_REF:-dev} | sed s/.*\\///g)" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build and push
         uses: docker/build-push-action@v3
