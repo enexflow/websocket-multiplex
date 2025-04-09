@@ -1,5 +1,5 @@
 # Production stage
-FROM node:18-alpine
+FROM node:22-alpine
 
 LABEL org.opencontainers.image.description="WebSocket Multiplexer"
 LABEL org.opencontainers.image.source="https://github.com/enexflow/websocket-multiplex"
