@@ -67,10 +67,11 @@ function formatMessage(message) {
 
 // Create a message box with header
 function createMessageBox(type, direction, connectionId, content) {
-  const directionInfo = {
-    'client-to-upstream': 'client → upstream',
-    'upstream-to-client': 'upstream → client',
-  }[direction] || direction;
+  const directionInfo =
+    {
+      'client-to-upstream': 'client → upstream',
+      'upstream-to-client': 'upstream → client',
+    }[direction] || direction;
   const typeEmoji =
     {
       message: '📨',
@@ -81,24 +82,28 @@ function createMessageBox(type, direction, connectionId, content) {
     }[type] || '📝';
 
   const header = `${typeEmoji} ${formatTimestamp()} ${connectionId || 'all'}${directionInfo ? ` (${directionInfo})` : ''}`;
-  
+
   if (type === 'connection') {
     const event = content.event;
-    const eventEmoji = {
-      'client-connected': '🟢',
-      'client-disconnected': '🔴',
-      'upstream-connected': '🟢',
-      'upstream-disconnected': '🔴'
-    }[event] || '🔌';
-    
-    const eventText = {
-      'client-connected': 'Client connected',
-      'client-disconnected': 'Client disconnected',
-      'upstream-connected': 'Upstream connected',
-      'upstream-disconnected': 'Upstream disconnected'
-    }[event] || event;
-    
-    const details = content.code ? ` (code: ${content.code}${content.reason ? `, reason: ${content.reason}` : ''})` : '';
+    const eventEmoji =
+      {
+        'client-connected': '🟢',
+        'client-disconnected': '🔴',
+        'upstream-connected': '🟢',
+        'upstream-disconnected': '🔴',
+      }[event] || '🔌';
+
+    const eventText =
+      {
+        'client-connected': 'Client connected',
+        'client-disconnected': 'Client disconnected',
+        'upstream-connected': 'Upstream connected',
+        'upstream-disconnected': 'Upstream disconnected',
+      }[event] || event;
+
+    const details = content.code
+      ? ` (code: ${content.code}${content.reason ? `, reason: ${content.reason}` : ''})`
+      : '';
     return `${header} ${eventEmoji} ${eventText}${details}`;
   }
 
