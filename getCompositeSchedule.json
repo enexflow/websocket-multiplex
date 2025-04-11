@@ -1,0 +1,9 @@
+[
+  2,
+  "ophir000",
+  "GetCompositeSchedule",
+  {
+    "connectorId": 0,
+    "duration": 3600
+  }
+]
