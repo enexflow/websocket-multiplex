@@ -1,3 +1,26 @@
+/**
+ * WebSocket Multiplexer Master Listener Script
+ *
+ * This script connects to the WebSocket multiplexer's master server and listens
+ * for messages from specified targets. It can be used to monitor and debug the
+ * multiplexer's message flow.
+ *
+ * Usage:
+ *   node test-ws-listen.js <target>
+ *
+ * Example:
+ *   node test-ws-listen.js all
+ *   node test-ws-listen.js /chat
+ *
+ * Arguments:
+ *   - target: The target to listen to. Can be one of:
+ *     - all - Listen to all connections
+ *     - /path - Listen to a specific path (e.g. /chat)
+ *
+ * Environment Variables:
+ *   - MASTER_URL: URL of the master server (default: ws://localhost:8081)
+ */
+
 const WebSocket = require('ws');
 const util = require('node:util');
 
