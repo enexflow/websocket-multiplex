@@ -1,23 +1,23 @@
 [
   2,
-  "5f9a9a97-b0b3-4392-8b2e-63a1c8c7eb28",
+  "ophir000",
   "SetChargingProfile",
   {
     "connectorId": 1,
     "csChargingProfiles": {
-      "chargingProfileId": 26771,
+      "chargingProfileId": 12321,
       "chargingProfileKind": "Absolute",
       "chargingProfilePurpose": "TxProfile",
       "chargingSchedule": {
-        "startSchedule": "2025-03-07T09:33:00.000Z",
+        "startSchedule": "2025-04-11T15:51:00.000Z",
         "chargingRateUnit": "W",
         "chargingSchedulePeriod": [
           {
-            "limit": 20000,
+            "limit": 123456,
             "startPeriod": 0
           }
         ],
-        "duration": 86400
+        "duration": 3600
       },
       "stackLevel": 1,
       "transactionId": 33404424
