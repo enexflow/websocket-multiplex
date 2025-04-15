@@ -44,15 +44,189 @@
 const WebSocket = require('ws');
 const fs = require('node:fs');
 const path = require('node:path');
+const util = require('node:util');
 
 // Configuration
 const MASTER_URL = process.env.MASTER_URL || 'ws://localhost:8081';
-const TIMEOUT = Number.parseInt(process.env.TIMEOUT || '5000', 10);
+const TIMEOUT = Number.parseInt(process.env.TIMEOUT || '1000', 10);
+
+const BANNER = `
+╔═════════════════════════════════════════════════════╗
+║ 💉 WebSocket Multiplexer Message Injector           ║
+╚═════════════════════════════════════════════════════╝
+`;
+
+// Format JSON with colors
+function formatMessage(message) {
+  if (typeof message === 'string') {
+    try {
+      return util.inspect(JSON.parse(message), {
+        colors: true,
+        depth: null,
+        compact: false,
+        breakLength: 80,
+      });
+    } catch (e) {
+      return message;
+    }
+  }
+  return util.inspect(message, {
+    colors: true,
+    depth: null,
+    compact: false,
+    breakLength: 80,
+  });
+}
+
+function isOcppMessage(message) {
+  try {
+    const parsed = typeof message === 'string' ? JSON.parse(message) : message;
+    if (!Array.isArray(parsed) || parsed.length < 3) return false;
+
+    const [messageType, messageId, ...rest] = parsed;
+    if (typeof messageType !== 'number' || typeof messageId !== 'string')
+      return false;
+
+    if (messageType === 2) {
+      // Request
+      return (
+        rest.length >= 2 &&
+        typeof rest[0] === 'string' &&
+        typeof rest[1] === 'object'
+      );
+    }
+    if (messageType === 3) {
+      // Response
+      return rest.length >= 1 && typeof rest[0] === 'object';
+    }
+
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+function parseMessage(message) {
+  try {
+    return typeof message === 'string' ? JSON.parse(message) : message;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getOcppMessageType(parsedMessage) {
+  return Array.isArray(parsedMessage) && parsedMessage.length > 0
+    ? parsedMessage[0]
+    : null;
+}
+
+function getOcppMessageId(parsedMessage) {
+  return Array.isArray(parsedMessage) && parsedMessage.length > 1
+    ? parsedMessage[1]
+    : null;
+}
+
+function isOcppRequest(parsedMessage) {
+  return getOcppMessageType(parsedMessage) === 2;
+}
+
+function isOcppResponse(parsedMessage) {
+  return getOcppMessageType(parsedMessage) === 3;
+}
+
+function getOcppRequestAction(parsedMessage) {
+  return isOcppRequest(parsedMessage) && parsedMessage.length > 2
+    ? parsedMessage[2]
+    : null;
+}
+
+function getOcppRequestPayload(parsedMessage) {
+  return isOcppRequest(parsedMessage) && parsedMessage.length > 3
+    ? parsedMessage[3]
+    : null;
+}
+
+function getOcppResponsePayload(parsedMessage) {
+  return isOcppResponse(parsedMessage) && parsedMessage.length > 2
+    ? parsedMessage[2]
+    : null;
+}
+
+function isMatchingOcppResponse(requestId, message) {
+  const parsedMessage = parseMessage(message);
+  if (!parsedMessage) return false;
+
+  return (
+    isOcppResponse(parsedMessage) &&
+    getOcppMessageId(parsedMessage) === requestId
+  );
+}
+
+function formatOcppMessage(message) {
+  const parsedMessage = parseMessage(message);
+  if (!parsedMessage) return null;
+
+  const messageType = getOcppMessageType(parsedMessage);
+  const messageId = getOcppMessageId(parsedMessage);
+
+  if (messageType === 2) {
+    const action = getOcppRequestAction(parsedMessage);
+    const payload = getOcppRequestPayload(parsedMessage);
+    return {
+      type: 'request',
+      messageId,
+      action,
+      payload,
+    };
+  }
+
+  if (messageType === 3) {
+    const payload = getOcppResponsePayload(parsedMessage);
+    return {
+      type: 'response',
+      messageId,
+      payload,
+    };
+  }
+
+  return null;
+}
+
+function logOcppMessage(message) {
+  const formatted = formatOcppMessage(message);
+  if (!formatted) return false;
+
+  if (formatted.type === 'request') {
+    console.log('📤 OCPP Request:');
+    console.log(`  Message ID: ${formatted.messageId}`);
+    console.log(`  Action: ${formatted.action}`);
+    console.log('  Payload:');
+    console.log(formatMessage(formatted.payload));
+  } else {
+    console.log('📥 OCPP Response:');
+    console.log(`  Message ID: ${formatted.messageId}`);
+    console.log('  Payload:');
+    console.log(formatMessage(formatted.payload));
+  }
+
+  return true;
+}
+
+// Format timestamp in a friendly way
+function formatTimestamp() {
+  const now = new Date();
+  return now.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 
 // Parse command line arguments
 function parseArgs() {
   if (process.argv.length !== 3) {
-    console.error('Error: Invalid number of arguments');
+    console.error('❌ Error: Invalid number of arguments');
     console.error(
       'Usage: node test-ws-injection.js <target>:<message_file_path>'
     );
@@ -63,18 +237,16 @@ function parseArgs() {
   const parts = arg.split(':');
 
   if (parts.length < 2) {
-    console.error('Error: Invalid argument format');
+    console.error('❌ Error: Invalid argument format');
     console.error(
       'Usage: node test-ws-injection.js <target>:<message_file_path>'
     );
     process.exit(1);
   }
 
-  // Handle the case where the target might contain colons (e.g., client:/path:file.json)
   const filePath = parts.pop();
   const target = parts.join(':');
 
-  // Validate target
   const validTargets = ['all-clients', 'all-upstreams'];
   const validPrefixes = ['client:', 'upstream:'];
 
@@ -83,7 +255,7 @@ function parseArgs() {
     validPrefixes.some((prefix) => target.startsWith(prefix));
 
   if (!isValidTarget) {
-    console.error('Error: Invalid target');
+    console.error('❌ Error: Invalid target');
     console.error(
       'Valid targets: client:<id>, upstream:<id>, all-clients, all-upstreams'
     );
@@ -97,87 +269,137 @@ function parseArgs() {
 function readMessageFile(filePath) {
   try {
     const resolvedPath = path.resolve(filePath);
-    console.log(`Reading message from: ${resolvedPath}`);
+    console.log(`📄 Reading message from: ${resolvedPath}`);
 
     return fs.readFileSync(resolvedPath, 'utf8');
   } catch (error) {
     if (error.code === 'ENOENT') {
-      console.error(`Error: File not found: ${filePath}`);
+      console.error(`❌ Error: File not found: ${filePath}`);
     } else if (error instanceof SyntaxError) {
-      console.error(`Error: Invalid JSON in file: ${filePath}`);
+      console.error(`❌ Error: Invalid JSON in file: ${filePath}`);
       console.error(error.message);
     } else {
-      console.error(`Error reading file: ${error.message}`);
+      console.error(`❌ Error reading file: ${error.message}`);
     }
     process.exit(1);
   }
 }
 
-// Connect to master server and inject message
-function injectMessage(target, message) {
-  console.log(`Connecting to master server at ${MASTER_URL}`);
+function createInjectionMessage(target, message) {
+  return {
+    type: 'inject',
+    target,
+    message,
+  };
+}
 
-  const ws = new WebSocket(MASTER_URL);
-  let connectionClosed = false;
+function logInjectionDetails(target, message) {
+  console.log(`🎯 Injecting message to target: ${target}`);
+  console.log('📦 Message payload:');
+  console.log(formatMessage(message));
+}
 
-  // Set connection timeout
-  const timeoutId = setTimeout(() => {
-    if (!connectionClosed) {
-      console.error(`Connection timeout after ${TIMEOUT}ms`);
-      ws.close();
-      process.exit(1);
-    }
-  }, TIMEOUT);
+function handleStatusMessage(response) {
+  console.log(
+    `📊 Server status: ${response.clients.length} clients, ${response.upstreams.length} upstreams`
+  );
+}
+
+function handleMessageDirection(response) {
+  console.log(`📥 ${response.direction} (${response.connectionId}):`);
+}
+
+function handleMatchingResponse(ws, message) {
+  console.log('✅ Received matching response:');
+  console.log(formatMessage(message));
+  ws.close(1000, 'Received matching response');
+}
+
+function handleNonOcppMessage(message) {
+  console.log(formatMessage(message));
+}
+
+function handleWebSocketError(error) {
+  console.error('❌ WebSocket error:', error.message);
+  process.exit(1);
+}
+
+function handleWebSocketClose(code, reason) {
+  const reasonStr = reason ? reason.toString() : 'No reason provided';
+  console.log('👋 Connection closed');
+  console.log(`Code: ${code}`);
+  console.log(`Reason: ${reasonStr}`);
+  process.exit(0);
+}
+
+function setupWebSocketHandlers(ws, target, message) {
+  const parsedMessage = parseMessage(message);
+  const requestMessageId = isOcppMessage(message)
+    ? getOcppMessageId(parsedMessage)
+    : null;
 
   ws.on('open', () => {
-    console.log('Connected to master server');
-
-    // Create injection message
-    const injectionMessage = {
-      type: 'inject',
-      target,
-      message,
-    };
-
-    console.log(`Injecting message to target: ${target}`);
-    console.log('Message payload:', message);
-
-    // Send the injection message
-    ws.send(JSON.stringify(injectionMessage));
-
-    // Wait a bit before closing to ensure message is processed
-    setTimeout(() => {
-      console.log('Message sent successfully');
-      ws.close(1000, 'Injection complete');
-    }, 500);
+    console.log('✅ Connected to master server');
+    logInjectionDetails(target, message);
+    ws.send(JSON.stringify(createInjectionMessage(target, message)));
   });
 
   ws.on('message', (data) => {
     try {
       const response = JSON.parse(data.toString());
-      console.log(
-        'Received response from master server:',
-        JSON.stringify(response, null, 2)
-      );
+
+      if (response.type === 'status') {
+        handleStatusMessage(response);
+        return;
+      }
+
+      if (response.type === 'message') {
+        handleMessageDirection(response);
+        try {
+          const message = JSON.parse(response.message);
+          if (
+            requestMessageId &&
+            isMatchingOcppResponse(requestMessageId, message)
+          ) {
+            handleMatchingResponse(ws, message);
+            return;
+          }
+          if (!logOcppMessage(message)) {
+            handleNonOcppMessage(message);
+          }
+        } catch (e) {
+          handleNonOcppMessage(response.message);
+        }
+        return;
+      }
+
+      handleNonOcppMessage(response);
     } catch (error) {
-      console.log('Received non-JSON response:', data.toString());
+      handleNonOcppMessage(data.toString());
     }
   });
 
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error.message);
-    clearTimeout(timeoutId);
-    process.exit(1);
-  });
+  ws.on('error', handleWebSocketError);
+  ws.on('close', handleWebSocketClose);
+}
 
-  ws.on('close', (code, reason) => {
-    connectionClosed = true;
-    clearTimeout(timeoutId);
+function injectMessage(target, message) {
+  console.log(BANNER);
+  console.log(`🔌 Connecting to master server at ${MASTER_URL}`);
 
-    const reasonStr = reason ? reason.toString() : 'No reason provided';
-    console.log(`Connection closed. Code: ${code}, Reason: ${reasonStr}`);
-    process.exit(0);
-  });
+  const ws = new WebSocket(MASTER_URL);
+  const connectionClosed = false;
+  const messageSent = false;
+
+  const timeoutId = setTimeout(() => {
+    if (!connectionClosed) {
+      console.error(`⏰ Connection timeout after ${TIMEOUT}ms`);
+      ws.close();
+      process.exit(1);
+    }
+  }, TIMEOUT);
+
+  setupWebSocketHandlers(ws, target, message);
 }
 
 // Main function
@@ -187,16 +409,14 @@ function main() {
     const message = readMessageFile(filePath);
     injectMessage(target, message);
   } catch (error) {
-    console.error('Unexpected error:', error);
+    console.error('❌ Unexpected error:', error);
     process.exit(1);
   }
 }
 
-// Handle process termination
 process.on('SIGINT', () => {
-  console.log('Process interrupted');
+  console.log('👋 Process interrupted');
   process.exit(0);
 });
 
-// Start the script
 main();

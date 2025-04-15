@@ -928,6 +928,11 @@ function setupClientConnection(ws, req) {
     connected: false,
   });
 
+  notifyRootMasters('connection', 'client-connected', pathname, {
+    ip,
+    headers: req.headers,
+  });
+
   // Handle upstream connection
   upstreamWs.on('open', () => handleUpstreamOpen(upstreamWs, pathname));
 
