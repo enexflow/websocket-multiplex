@@ -159,11 +159,7 @@ function sendMessage(ws, message, source, target) {
 
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     const messageStr = message.toString();
-    const truncatedMsg =
-      messageStr.length > 200
-        ? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
-        : messageStr;
-    logger.debug(`${source} -> ${target}: ${truncatedMsg}`);
+    logger.debug(`${source} -> ${target}: ${messageStr}`);
   }
 }
 
@@ -326,12 +322,8 @@ function processQueuedMessages(pathname) {
 
       if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
         const messageStr = queuedMessage.message.toString();
-        const truncatedMsg =
-          messageStr.length > 200
-            ? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
-            : messageStr;
         logger.debug(
-          `multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg} (dequeued)`
+          `multiplexer -> ${UPSTREAM_URL}${pathname}: ${messageStr} (dequeued)`
         );
       }
 
@@ -403,12 +395,8 @@ function queueMessage(pathname, message) {
 
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     const messageStr = message.toString();
-    const truncatedMsg =
-      messageStr.length > 200
-        ? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
-        : messageStr;
     logger.debug(
-      `client -> multiplexer on ${pathname}: ${truncatedMsg} (queued)`
+      `client -> multiplexer on ${pathname}: ${messageStr} (queued)`
     );
   }
 
@@ -457,12 +445,8 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 
       if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
         const messageStr = queuedMessage.message.toString();
-        const truncatedMsg =
-          messageStr.length > 200
-            ? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
-            : messageStr;
         logger.debug(
-          `multiplexer -> master: discarded message notification for ${connectionId}: ${truncatedMsg}`
+          `multiplexer -> master: discarded message notification for ${connectionId}: ${messageStr}`
         );
       }
     } else if (master.targetPath === connectionId) {
@@ -534,21 +518,16 @@ function handleUpstreamMessage(ws, pathname, message) {
 function logMessageIfDebug(direction, pathname, message) {
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     const messageStr = message.toString();
-    const truncatedMsg =
-      messageStr.length > 200
-        ? `${messageStr.substring(0, 200)}... (${messageStr.length} bytes)`
-        : messageStr;
-
     if (direction === 'Client → Upstream') {
-      logger.debug(`client -> multiplexer:${pathname}: ${truncatedMsg}`);
+      logger.debug(`client -> multiplexer:${pathname}: ${messageStr}`);
       logger.debug(
-        `multiplexer -> ${UPSTREAM_URL}${pathname}: ${truncatedMsg}`
+        `multiplexer -> ${UPSTREAM_URL}${pathname}: ${messageStr}`
       );
     } else if (direction === 'Upstream → Client') {
       logger.debug(
-        `${UPSTREAM_URL}${pathname} -> multiplexer: ${truncatedMsg}`
+        `${UPSTREAM_URL}${pathname} -> multiplexer: ${messageStr}`
       );
-      logger.debug(`multiplexer -> client:${pathname}: ${truncatedMsg}`);
+      logger.debug(`multiplexer -> client:${pathname}: ${messageStr}`);
     }
   }
 }
