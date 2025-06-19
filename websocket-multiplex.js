@@ -520,14 +520,10 @@ function logMessageIfDebug(direction, pathname, message) {
     const messageStr = message.toString();
     if (direction === 'Client → Upstream') {
       logger.debug(`client -> multiplexer:${pathname}: ${messageStr}`);
-      logger.debug(
-        `multiplexer -> ${UPSTREAM_URL}${pathname}: ${messageStr}`
-      );
     } else if (direction === 'Upstream → Client') {
       logger.debug(
         `${UPSTREAM_URL}${pathname} -> multiplexer: ${messageStr}`
       );
-      logger.debug(`multiplexer -> client:${pathname}: ${messageStr}`);
     }
   }
 }
