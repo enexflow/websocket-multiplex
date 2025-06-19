@@ -3,8 +3,6 @@ name: Push to ECR
 on:
   push:
     branches: [ staging, prod ]
-  pull_request:
-    branches: [ staging, prod ]
 
 jobs:
   push-to-ecr:
