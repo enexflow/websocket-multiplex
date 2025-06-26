@@ -113,6 +113,67 @@ The master control connection allows you to:
 
 Connect to the master control at: `ws://localhost:{MASTER_PORT}`
 
+### Master Message Types
+
+The multiplexer sends several types of messages to the master control:
+
+#### Status Messages
+```javascript
+{
+  type: 'status',
+  clients: ['/path1', '/path2'],  // Array of active client paths
+  upstreams: ['/path1', '/path2'] // Array of active upstream paths
+}
+```
+
+#### Connection Events
+```javascript
+{
+  type: 'connection',
+  event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected'
+  connectionId: '/path',
+  ip: '127.0.0.1',           // Only for client-connected
+  headers: { ... },          // Only for client-connected
+  code: 1000,                // Only for disconnection events
+  reason: 'Normal closure'   // Only for disconnection events
+}
+```
+
+#### Message Events
+```javascript
+{
+  type: 'message',
+  direction: 'client-to-upstream',  // or 'upstream-to-client'
+  connectionId: '/path',
+  message: 'message content'
+}
+```
+
+#### Queued Message Events
+```javascript
+{
+  type: 'message',
+  direction: 'client-to-upstream-dequeued',
+  connectionId: '/path',
+  message: 'message content',
+  queuedAt: '2024-01-01T12:00:00.000Z',
+  sentAt: '2024-01-01T12:00:01.000Z'
+}
+```
+
+#### Error Events
+```javascript
+{
+  type: 'error',
+  event: 'upstream-error',
+  connectionId: '/path',
+  message: 'Error message',
+  code: 'error code',
+  target: 'upstream URL',
+  time: '2024-01-01T12:00:00.000Z'
+}
+```
+
 ### Example: Multiplex a specific connection
 
 ```javascript

@@ -341,7 +341,7 @@ function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
   notifyRootMasters('message', 'client-to-upstream-dequeued', connectionId, {
     message: queuedMessage.message.toString(),
     queuedAt: queuedMessage.timestamp,
-    sentAt: new Date().toISOString()
+    sentAt: new Date().toISOString(),
   });
 
   notifyConnectionMasters(connectionId, queuedMessage.message, 'upstream');
@@ -536,10 +536,12 @@ function logMessageIfDebug(direction, pathname, message) {
  */
 function notifyMasterAboutMessage(direction, connectionId, message) {
   notifyRootMasters('message', direction, connectionId, {
-    message: message.toString()
+    message: message.toString(),
   });
 
-  const targetDirection = direction.startsWith('client-to-') ? 'upstream' : 'client';
+  const targetDirection = direction.startsWith('client-to-')
+    ? 'upstream'
+    : 'client';
   notifyConnectionMasters(connectionId, message, targetDirection);
 }
 
@@ -567,7 +569,7 @@ function handleClientDisconnection(pathname, code, reason) {
 
   notifyRootMasters('connection', 'client-disconnected', pathname, {
     code,
-    reason: reason?.toString()
+    reason: reason?.toString(),
   });
 }
 
@@ -590,7 +592,12 @@ function handleUpstreamDisconnection(pathname, code, reason) {
   logImportantCloseCodes(pathname, code);
 
   if (pathname === '/') {
-    notifyRootMasters('connection', 'upstream-disconnected', pathname, closeInfo);
+    notifyRootMasters(
+      'connection',
+      'upstream-disconnected',
+      pathname,
+      closeInfo
+    );
   }
 
   const client = connections.clients.get(pathname);
@@ -687,7 +694,7 @@ function formatMasterMessage(type, event, connectionId, details = {}) {
     type,
     [type === 'message' ? 'direction' : 'event']: event,
     connectionId,
-    ...details
+    ...details,
   });
 }
 
@@ -716,7 +723,12 @@ function notifyRootMasters(type, event, connectionId, details = {}) {
 function notifyConnectionMasters(connectionId, message, direction) {
   for (const master of connections.masters) {
     if (master.targetPath === connectionId && master.type === direction) {
-      sendMessage(master.ws, message, 'multiplexer', `${master.type}:${master.targetPath}`);
+      sendMessage(
+        master.ws,
+        message,
+        'multiplexer',
+        `${master.type}:${master.targetPath}`
+      );
     }
   }
 }
@@ -807,6 +819,44 @@ function handleUnexpectedResponse(pathname, response) {
 }
 
 /**
+ * Filters and transforms headers for the upstream connection
+ * @param {Object} headers - The original request headers
+ * @returns {Object} The filtered and transformed headers
+ */
+function prepareUpstreamHeaders(headers) {
+  const filteredHeaders = {};
+
+  // Headers to forward
+  const forwardHeaders = [
+    'authorization',
+    'sec-websocket-protocol',
+    'sec-websocket-version',
+    'user-agent',
+    'x-request-id',
+    'x-real-ip',
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-port',
+    'x-forwarded-proto',
+    'x-forwarded-scheme',
+    'x-scheme',
+  ];
+
+  // Copy allowed headers
+  for (const header of forwardHeaders) {
+    if (headers[header]) {
+      filteredHeaders[header] = headers[header];
+    }
+  }
+
+  // Add our own headers
+  filteredHeaders['x-proxied-by'] = 'websocket-multiplexer';
+  filteredHeaders['x-proxy-time'] = new Date().toISOString();
+
+  return filteredHeaders;
+}
+
+/**
  * Sets up a new client connection and its corresponding upstream connection
  * @param {WebSocket} ws - The client WebSocket connection
  * @param {http.IncomingMessage} req - The HTTP request
@@ -827,12 +877,17 @@ function setupClientConnection(ws, req) {
   const protocols = protocol_string
     .split(/,\s*/)
     .filter((p) => p.trim() !== '');
+
+  const options = {
+    headers: prepareUpstreamHeaders(req.headers),
+  };
   logger.info(
-    `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols}`
+    `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols} and options: ${JSON.stringify(options)}`
   );
   const upstreamWs = new WebSocket(
     upstreamUrl,
-    protocols.length > 0 ? protocols : undefined
+    protocols.length > 0 ? protocols : undefined,
+    options
   );
 
   // Store connection info
@@ -846,6 +901,11 @@ function setupClientConnection(ws, req) {
     ws: upstreamWs,
     clientId: pathname,
     connected: false,
+  });
+
+  notifyRootMasters('connection', 'client-connected', pathname, {
+    ip,
+    headers: req.headers,
   });
 
   // Handle upstream connection
