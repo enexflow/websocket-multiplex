@@ -67,7 +67,7 @@ process.on('uncaughtException', (error) => {
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   console.error('\nUnhandled promise rejection:', reason);
   if (globalTestRunner) {
     globalTestRunner.cleanup();

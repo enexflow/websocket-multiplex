@@ -480,7 +480,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
  * @param {string} pathname - The connection identifier
  * @param {string | Buffer} message - The message received
  */
-function handleClientMessage(ws, pathname, message) {
+function handleClientMessage(_ws, pathname, message) {
   const upstream = connections.upstreams.get(pathname);
 
   logMessageIfDebug('Client → Upstream', pathname, message);
@@ -787,7 +787,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
  * @param {string} pathname - The connection identifier
  */
 function setupAdvancedDebugListeners(upstreamWs, pathname) {
-  upstreamWs.on('unexpected-response', (request, response) => {
+  upstreamWs.on('unexpected-response', (_request, response) => {
     handleUnexpectedResponse(pathname, response);
   });
 

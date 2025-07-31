@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const readline = require('readline');
+const readline = require('node:readline');
 
 const PORT = process.env.PORT || 9000;
 

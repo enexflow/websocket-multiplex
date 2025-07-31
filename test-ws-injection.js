@@ -66,7 +66,7 @@ function formatMessage(message) {
         compact: false,
         breakLength: 80,
       });
-    } catch (e) {
+    } catch (_e) {
       return message;
     }
   }
@@ -101,7 +101,7 @@ function isOcppMessage(message) {
     }
 
     return false;
-  } catch (e) {
+  } catch (_e) {
     return false;
   }
 }
@@ -109,7 +109,7 @@ function isOcppMessage(message) {
 function parseMessage(message) {
   try {
     return typeof message === 'string' ? JSON.parse(message) : message;
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
 }
@@ -212,17 +212,6 @@ function logOcppMessage(message) {
   return true;
 }
 
-// Format timestamp in a friendly way
-function formatTimestamp() {
-  const now = new Date();
-  return now.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
 // Parse command line arguments
 function parseArgs() {
   if (process.argv.length !== 3) {
@@ -272,7 +261,7 @@ function readMessageFile(filePath) {
     console.log(`📄 Reading message from: ${resolvedPath}`);
 
     return fs.readFileSync(resolvedPath, 'utf8');
-  } catch (error) {
+  } catch (_error) {
     if (error.code === 'ENOENT') {
       console.error(`❌ Error: File not found: ${filePath}`);
     } else if (error instanceof SyntaxError) {
@@ -367,14 +356,14 @@ function setupWebSocketHandlers(ws, target, message) {
           if (!logOcppMessage(message)) {
             handleNonOcppMessage(message);
           }
-        } catch (e) {
+        } catch (_e) {
           handleNonOcppMessage(response.message);
         }
         return;
       }
 
       handleNonOcppMessage(response);
-    } catch (error) {
+    } catch (_error) {
       handleNonOcppMessage(data.toString());
     }
   });
@@ -389,9 +378,8 @@ function injectMessage(target, message) {
 
   const ws = new WebSocket(MASTER_URL);
   const connectionClosed = false;
-  const messageSent = false;
 
-  const timeoutId = setTimeout(() => {
+  setTimeout(() => {
     if (!connectionClosed) {
       console.error(`⏰ Connection timeout after ${TIMEOUT}ms`);
       ws.close();
@@ -408,7 +396,7 @@ function main() {
     const { target, filePath } = parseArgs();
     const message = readMessageFile(filePath);
     injectMessage(target, message);
-  } catch (error) {
+  } catch (_error) {
     console.error('❌ Unexpected error:', error);
     process.exit(1);
   }
