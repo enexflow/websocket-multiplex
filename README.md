@@ -35,6 +35,7 @@ The multiplexer can be configured using environment variables:
 - `PORT`: The port on which the multiplexer will listen for client connections (default: 8080)
 - `MASTER_PORT`: The port on which the master control interface will be available (default: 8081)
 - `UPSTREAM_URL`: The WebSocket server to which connections will be forwarded (default: ws://localhost:9000)
+- `DYNAMIC_UPSTREAM_CONFIG_URL`: Optional URL for dynamic upstream resolution. When set, the multiplexer will make HTTP GET requests to `DYNAMIC_UPSTREAM_CONFIG_URL + pathname` to resolve the upstream URL for each connection. Falls back to `UPSTREAM_URL` on failure.
 - `LOG_LEVEL`: Controls the verbosity of logging (default: INFO)
 - `MESSAGE_QUEUE_TIMEOUT`: Time in milliseconds before queued messages are discarded (default: 30000)
 
@@ -276,6 +277,20 @@ master.send(JSON.stringify({
   message: 'Broadcast to all upstreams'
 }));
 ```
+
+## Dynamic Upstream Configuration
+
+When `DYNAMIC_UPSTREAM_CONFIG_URL` is set, the multiplexer will make HTTP GET requests to resolve upstream URLs dynamically for each connection:
+
+```bash
+DYNAMIC_UPSTREAM_CONFIG_URL=http://localhost:3000/api/upstream node websocket-multiplex.js
+```
+
+For a client connecting to `/chat`, the multiplexer will:
+1. Make a GET request to `http://localhost:3000/api/upstream/chat`
+2. Expect a plain text response with the upstream URL (e.g., `ws://chat-server:9001/chat`)
+3. Use that URL for the upstream connection
+4. Fall back to `UPSTREAM_URL + /chat` if the request fails
 
 ## Use Cases
 
