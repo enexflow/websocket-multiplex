@@ -644,6 +644,12 @@ class TestRunner {
       if (req.url === '/test-dynamic') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-dynamic`);
+      } else if (req.url === '/test-invalid-url') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('not-a-valid-url');
+      } else if (req.url === '/test-invalid-protocol') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('http://localhost:9000/test');
       } else {
         res.writeHead(404);
         res.end('Not found');
@@ -764,6 +770,52 @@ class TestRunner {
       
       fallbackClient.close();
       console.log('✓ Dynamic upstream fallback successful - message routed to default upstream');
+      
+      // Test 3: Invalid URL validation - should fall back to default
+      const invalidUrlClient = new WebSocketClient(
+        `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-invalid-url`
+      );
+      await withTimeout(invalidUrlClient.connect(), 3000, 'Invalid URL client connection timed out');
+      
+      // Wait a bit for the upstream connection to be fully established
+      await wait(1000);
+      
+      const invalidUrlMsg = randomMessage('invalid-url-test');
+      await invalidUrlClient.send(invalidUrlMsg);
+      
+      // Should reach the original upstream (fallback) since invalid URL is returned
+      const invalidUrlReceived = await withTimeout(
+        this.upstream.receiveMessage(),
+        3000,
+        'Waiting for invalid URL message timed out'
+      );
+      assert.equal(invalidUrlReceived, invalidUrlMsg);
+      
+      invalidUrlClient.close();
+      console.log('✓ Invalid URL validation successful - falls back to default upstream');
+      
+      // Test 4: Invalid protocol validation - should fall back to default
+      const invalidProtocolClient = new WebSocketClient(
+        `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-invalid-protocol`
+      );
+      await withTimeout(invalidProtocolClient.connect(), 3000, 'Invalid protocol client connection timed out');
+      
+      // Wait a bit for the upstream connection to be fully established
+      await wait(1000);
+      
+      const invalidProtocolMsg = randomMessage('invalid-protocol-test');
+      await invalidProtocolClient.send(invalidProtocolMsg);
+      
+      // Should reach the original upstream (fallback) since invalid protocol is returned
+      const invalidProtocolReceived = await withTimeout(
+        this.upstream.receiveMessage(),
+        3000,
+        'Waiting for invalid protocol message timed out'
+      );
+      assert.equal(invalidProtocolReceived, invalidProtocolMsg);
+      
+      invalidProtocolClient.close();
+      console.log('✓ Invalid protocol validation successful - falls back to default upstream');
       
     } finally {
       if (dynamicMultiplexer && !dynamicMultiplexer.killed) {
