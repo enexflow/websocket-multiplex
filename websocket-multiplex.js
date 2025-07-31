@@ -210,6 +210,46 @@ function handleMasterInjection(data) {
 }
 
 /**
+ * Handles connection closure requests from master
+ * @param {{ connectionId: string, reason?: string }} data - The close data containing connection ID and optional reason
+ */
+function handleMasterClose(data) {
+  const connectionId = data.connectionId;
+  const reason = data.reason || 'Closed by websocket-multiplex master control';
+  
+  logger.info(`Master requesting to close connection: ${connectionId}`);
+  
+  const client = connections.clients.get(connectionId);
+  const upstream = connections.upstreams.get(connectionId);
+  
+  if (!client && !upstream) {
+    logger.warn(`Connection ${connectionId} not found for closure`);
+    return;
+  }
+  
+  // Close client connection if it exists
+  if (client && client.ws.readyState === WebSocket.OPEN) {
+    logger.info(`Closing client connection for ${connectionId}`);
+    client.ws.close(1000, reason);
+  }
+  
+  // Close upstream connection if it exists
+  if (upstream && upstream.ws.readyState === WebSocket.OPEN) {
+    logger.info(`Closing upstream connection for ${connectionId}`);
+    upstream.ws.close(1000, reason);
+  }
+  
+  // Clean up message queue
+  connections.messageQueues.delete(connectionId);
+  
+  // Notify root masters about the forced closure
+  notifyRootMasters('connection', 'connection-closed-by-master', connectionId, {
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
  * Handles messages received from the master connection
  * @param { MasterConnection } masterConnection - The master WebSocket connection
  * @param {string} message - The message received
@@ -218,16 +258,15 @@ function handleMasterMessage(masterConnection, message) {
   const { path, type, targetPath, ws } = masterConnection;
   if (type === 'root') {
     try {
-      /** @type {{ type: string, target: string, message: string }} */
       const data = JSON.parse(message);
-      const target = data.target;
-      const contents = data.message;
       logger.debug(
-        `multiplexer <- master client: ${type} ${target} ${contents}`
+        `multiplexer <- master client: ${type} ${JSON.stringify(data)}`
       );
 
-      if (data.type === 'inject') {
+      if (data.type === 'inject' && data.target && data.message) {
         handleMasterInjection(data);
+      } else if (data.type === 'close' && data.connectionId) {
+        handleMasterClose(data);
       }
     } catch (error) {
       logger.error('Error processing master message:', error);
