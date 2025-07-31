@@ -11,26 +11,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  lint-and-format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '22'
-          cache: 'npm'
-      
-      - name: Install dependencies
-        run: npm ci
-
-
-
-      - name: Run linter
-        run: npx biome check .
-
-  type-check:
+  static-analysis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -47,8 +28,8 @@ jobs:
       - name: Run type check
         run: npx tsc --noEmit
 
-      - name: Check formatting
-        run: npx biome format --check .
+      - name: Run lint
+        run: npx run lint
   test:
     runs-on: ubuntu-latest
     steps:
@@ -67,7 +48,7 @@ jobs:
         run: npm test
 
   build-and-push:
-    needs: [lint-and-format, type-check]
+    needs: [static-analysis, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
