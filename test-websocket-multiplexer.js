@@ -111,7 +111,9 @@ class TestServer {
 
     this.wss.on('connection', (ws, req) => {
       console.log(
-        `[TEST SERVER] Client connected on path: ${req.url} with headers: ${JSON.stringify(req.headers)}`
+        `[TEST SERVER] Client connected on path: ${
+          req.url
+        } with headers: ${JSON.stringify(req.headers)}`
       );
       this.connections.set(req.url, ws);
       this.lastRequestHeaders = req.headers;
@@ -633,7 +635,7 @@ class TestRunner {
 
   async testDynamicUpstream() {
     console.log('Test: Dynamic upstream configuration');
-    
+
     // Create a second upstream server on a different port to prove dynamic routing works
     const DYNAMIC_UPSTREAM_PORT = this.config.TEST_PORT + 100;
     const dynamicUpstream = new TestServer(DYNAMIC_UPSTREAM_PORT);
@@ -658,7 +660,7 @@ class TestRunner {
 
     const CONFIG_PORT = 9999;
     const DYNAMIC_MULTIPLEXER_PORT = this.config.PROXY_PORT + 10;
-    
+
     await withTimeout(
       new Promise((resolve) => {
         configServer.listen(CONFIG_PORT, () => resolve());
@@ -677,17 +679,19 @@ class TestRunner {
       LOG_LEVEL: 'DEBUG',
     };
 
-    const dynamicMultiplexer = spawn('node', ['websocket-multiplex.js'], { env: dynamicEnv });
-    
+    const dynamicMultiplexer = spawn('node', ['websocket-multiplex.js'], {
+      env: dynamicEnv,
+    });
+
     // Add error logging for the dynamic multiplexer
     dynamicMultiplexer.stdout.on('data', (data) => {
       console.log(`[DYNAMIC MULTIPLEXER] ${data.toString().trim()}`);
     });
-    
+
     dynamicMultiplexer.stderr.on('data', (data) => {
       console.error(`[DYNAMIC MULTIPLEXER ERROR] ${data.toString().trim()}`);
     });
-    
+
     await withTimeout(
       new Promise((resolve, reject) => {
         let resolved = false;
@@ -699,7 +703,8 @@ class TestRunner {
         });
         dynamicMultiplexer.on('error', reject);
         dynamicMultiplexer.on('exit', (code) => {
-          if (!resolved) reject(new Error(`Dynamic multiplexer exited with code ${code}`));
+          if (!resolved)
+            reject(new Error(`Dynamic multiplexer exited with code ${code}`));
         });
       }),
       5000,
@@ -711,14 +716,18 @@ class TestRunner {
       const dynamicClient = new WebSocketClient(
         `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-dynamic`
       );
-      await withTimeout(dynamicClient.connect(), 3000, 'Dynamic client connection timed out');
-      
+      await withTimeout(
+        dynamicClient.connect(),
+        3000,
+        'Dynamic client connection timed out'
+      );
+
       // Wait a bit for the upstream connection to be fully established
       await wait(1000);
-      
+
       const testMsg = randomMessage('dynamic-test');
       await dynamicClient.send(testMsg);
-      
+
       // Verify message reached the DYNAMIC upstream server (not the original one)
       const receivedMsg = await withTimeout(
         dynamicUpstream.receiveMessage(),
@@ -726,31 +735,44 @@ class TestRunner {
         'Waiting for dynamic upstream message timed out'
       );
       assert.equal(receivedMsg, testMsg);
-      
+
       // Verify the original upstream server did NOT receive the message
       let originalUpstreamReceived = false;
       try {
-        await withTimeout(this.upstream.receiveMessage(), 500, 'Should not receive on original upstream');
+        await withTimeout(
+          this.upstream.receiveMessage(),
+          500,
+          'Should not receive on original upstream'
+        );
       } catch (error) {
         originalUpstreamReceived = error.message.includes('Should not receive');
       }
-      assert(originalUpstreamReceived, 'Message should not have reached original upstream');
-      
+      assert(
+        originalUpstreamReceived,
+        'Message should not have reached original upstream'
+      );
+
       dynamicClient.close();
-      console.log('✓ Dynamic upstream resolution successful - message routed to correct upstream');
-      
+      console.log(
+        '✓ Dynamic upstream resolution successful - message routed to correct upstream'
+      );
+
       // Test 2: Fallback behavior for unknown paths
       const fallbackClient = new WebSocketClient(
         `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-fallback`
       );
-      await withTimeout(fallbackClient.connect(), 3000, 'Fallback client connection timed out');
-      
+      await withTimeout(
+        fallbackClient.connect(),
+        3000,
+        'Fallback client connection timed out'
+      );
+
       // Wait a bit for the upstream connection to be fully established
       await wait(1000);
-      
+
       const fallbackMsg = randomMessage('fallback-test');
       await fallbackClient.send(fallbackMsg);
-      
+
       // Should reach the original upstream (fallback) since dynamic config returns 404
       const fallbackReceived = await withTimeout(
         this.upstream.receiveMessage(),
@@ -758,31 +780,44 @@ class TestRunner {
         'Waiting for fallback message timed out'
       );
       assert.equal(fallbackReceived, fallbackMsg);
-      
+
       // Verify dynamic upstream did NOT receive the fallback message
       let dynamicUpstreamReceived = false;
       try {
-        await withTimeout(dynamicUpstream.receiveMessage(), 500, 'Should not receive on dynamic upstream');
+        await withTimeout(
+          dynamicUpstream.receiveMessage(),
+          500,
+          'Should not receive on dynamic upstream'
+        );
       } catch (error) {
         dynamicUpstreamReceived = error.message.includes('Should not receive');
       }
-      assert(dynamicUpstreamReceived, 'Fallback message should not have reached dynamic upstream');
-      
+      assert(
+        dynamicUpstreamReceived,
+        'Fallback message should not have reached dynamic upstream'
+      );
+
       fallbackClient.close();
-      console.log('✓ Dynamic upstream fallback successful - message routed to default upstream');
-      
+      console.log(
+        '✓ Dynamic upstream fallback successful - message routed to default upstream'
+      );
+
       // Test 3: Invalid URL validation - should fall back to default
       const invalidUrlClient = new WebSocketClient(
         `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-invalid-url`
       );
-      await withTimeout(invalidUrlClient.connect(), 3000, 'Invalid URL client connection timed out');
-      
+      await withTimeout(
+        invalidUrlClient.connect(),
+        3000,
+        'Invalid URL client connection timed out'
+      );
+
       // Wait a bit for the upstream connection to be fully established
       await wait(1000);
-      
+
       const invalidUrlMsg = randomMessage('invalid-url-test');
       await invalidUrlClient.send(invalidUrlMsg);
-      
+
       // Should reach the original upstream (fallback) since invalid URL is returned
       const invalidUrlReceived = await withTimeout(
         this.upstream.receiveMessage(),
@@ -790,22 +825,28 @@ class TestRunner {
         'Waiting for invalid URL message timed out'
       );
       assert.equal(invalidUrlReceived, invalidUrlMsg);
-      
+
       invalidUrlClient.close();
-      console.log('✓ Invalid URL validation successful - falls back to default upstream');
-      
+      console.log(
+        '✓ Invalid URL validation successful - falls back to default upstream'
+      );
+
       // Test 4: Invalid protocol validation - should fall back to default
       const invalidProtocolClient = new WebSocketClient(
         `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-invalid-protocol`
       );
-      await withTimeout(invalidProtocolClient.connect(), 3000, 'Invalid protocol client connection timed out');
-      
+      await withTimeout(
+        invalidProtocolClient.connect(),
+        3000,
+        'Invalid protocol client connection timed out'
+      );
+
       // Wait a bit for the upstream connection to be fully established
       await wait(1000);
-      
+
       const invalidProtocolMsg = randomMessage('invalid-protocol-test');
       await invalidProtocolClient.send(invalidProtocolMsg);
-      
+
       // Should reach the original upstream (fallback) since invalid protocol is returned
       const invalidProtocolReceived = await withTimeout(
         this.upstream.receiveMessage(),
@@ -813,10 +854,11 @@ class TestRunner {
         'Waiting for invalid protocol message timed out'
       );
       assert.equal(invalidProtocolReceived, invalidProtocolMsg);
-      
+
       invalidProtocolClient.close();
-      console.log('✓ Invalid protocol validation successful - falls back to default upstream');
-      
+      console.log(
+        '✓ Invalid protocol validation successful - falls back to default upstream'
+      );
     } finally {
       if (dynamicMultiplexer && !dynamicMultiplexer.killed) {
         dynamicMultiplexer.kill('SIGKILL');

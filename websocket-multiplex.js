@@ -95,24 +95,24 @@ async function resolveUpstreamUrl(pathname) {
       upstreamUrl = new URL(upstreamUrlString);
     } catch (urlError) {
       throw new Error(
-        `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`,
+        `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`
       );
     }
 
     // Validate that it's a WebSocket URL
     if (upstreamUrl.protocol !== 'ws:' && upstreamUrl.protocol !== 'wss:') {
       throw new Error(
-        `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`,
+        `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`
       );
     }
 
     logger.info(
-      `Dynamic upstream resolved for ${pathname}: ${upstreamUrl.href}`,
+      `Dynamic upstream resolved for ${pathname}: ${upstreamUrl.href}`
     );
     return upstreamUrl;
   } catch (error) {
     logger.warn(
-      `Dynamic upstream resolution failed for ${pathname}: ${error.message}. Using default: ${defaultUrl.href}`,
+      `Dynamic upstream resolution failed for ${pathname}: ${error.message}. Using default: ${defaultUrl.href}`
     );
     return defaultUrl;
   }
@@ -230,7 +230,7 @@ function handleMasterInjection(data) {
         client.ws,
         data.message,
         'multiplexer',
-        `client:${client.upstreamId}`,
+        `client:${client.upstreamId}`
       );
     }
   } else if (data.target === 'all-upstreams') {
@@ -240,7 +240,7 @@ function handleMasterInjection(data) {
         upstream.ws,
         data.message,
         'multiplexer',
-        `upstream:${upstream.clientId}`,
+        `upstream:${upstream.clientId}`
       );
     }
   } else if (data.target.startsWith('client:')) {
@@ -278,7 +278,7 @@ function handleMasterMessage(masterConnection, message) {
       const target = data.target;
       const contents = data.message;
       logger.debug(
-        `multiplexer <- master client: ${type} ${target} ${contents}`,
+        `multiplexer <- master client: ${type} ${target} ${contents}`
       );
 
       if (data.type === 'inject') {
@@ -323,7 +323,7 @@ function setupMasterConnection(ws, req) {
     if (pathType !== 'client' && pathType !== 'upstream') {
       ws.close(
         1008,
-        'Invalid master path - must be / or /client/:path or /upstream/:path',
+        'Invalid master path - must be / or /client/:path or /upstream/:path'
       );
       return;
     }
@@ -339,14 +339,14 @@ function setupMasterConnection(ws, req) {
   }
 
   ws.on('message', (message) =>
-    handleMasterMessage(masterConnection, message.toString()),
+    handleMasterMessage(masterConnection, message.toString())
   );
 
   ws.on('close', (code, reason) => {
     logger.info(
       `Master control disconnected from ${pathname}. Code: ${code}, Reason: ${
         reason || 'No reason provided'
-      }`,
+      }`
     );
     connections.masters.delete(masterConnection);
   });
@@ -366,7 +366,7 @@ function processQueuedMessages(pathname) {
 
   if (messageQueue.length > 0) {
     logger.info(
-      `Processing ${messageQueue.length} queued messages for ${pathname}`,
+      `Processing ${messageQueue.length} queued messages for ${pathname}`
     );
     while (messageQueue.length > 0) {
       const queuedMessage = messageQueue.shift();
@@ -374,13 +374,13 @@ function processQueuedMessages(pathname) {
         upstream.ws,
         queuedMessage.message,
         'multiplexer',
-        upstream.upstreamUrl.href,
+        upstream.upstreamUrl.href
       );
 
       if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
         const messageStr = queuedMessage.message.toString();
         logger.debug(
-          `multiplexer -> ${upstream.upstreamUrl.href}: ${messageStr} (dequeued)`,
+          `multiplexer -> ${upstream.upstreamUrl.href}: ${messageStr} (dequeued)`
         );
       }
 
@@ -447,13 +447,13 @@ function queueMessage(pathname, message) {
   connections.messageQueues.set(pathname, messageQueue);
 
   logger.info(
-    `Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`,
+    `Queued message for ${pathname}: connection not established yet (queue size: ${messageQueue.length})`
   );
 
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     const messageStr = message.toString();
     logger.debug(
-      `client -> multiplexer on ${pathname}: ${messageStr} (queued)`,
+      `client -> multiplexer on ${pathname}: ${messageStr} (queued)`
     );
   }
 
@@ -475,7 +475,7 @@ function setupMessageTimeout(pathname, queuedMessage) {
       const upstream = connections.upstreams.get(pathname);
       const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.warn(
-        `Message for ${url} timed out after ${MESSAGE_QUEUE_TIMEOUT}ms and was discarded`,
+        `Message for ${url} timed out after ${MESSAGE_QUEUE_TIMEOUT}ms and was discarded`
       );
 
       notifyMasterAboutDiscardedMessage(pathname, queuedMessage);
@@ -505,7 +505,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
       if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
         const messageStr = queuedMessage.message.toString();
         logger.debug(
-          `multiplexer -> master: discarded message notification for ${connectionId}: ${messageStr}`,
+          `multiplexer -> master: discarded message notification for ${connectionId}: ${messageStr}`
         );
       }
     } else if (master.targetPath === connectionId) {
@@ -523,7 +523,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
         master.ws,
         notification,
         'multiplexer',
-        `${master.type}:${master.targetPath}`,
+        `${master.type}:${master.targetPath}`
       );
     }
   }
@@ -542,7 +542,7 @@ function handleClientMessage(ws, pathname, message) {
     'Client → Upstream',
     pathname,
     message,
-    upstream?.upstreamUrl,
+    upstream?.upstreamUrl
   );
   notifyMasterAboutMessage('client-to-upstream', pathname, message);
 
@@ -566,7 +566,7 @@ function handleUpstreamMessage(ws, pathname, message) {
     'Upstream → Client',
     pathname,
     message,
-    upstream?.upstreamUrl,
+    upstream?.upstreamUrl
   );
   notifyMasterAboutMessage('upstream-to-client', pathname, message);
 
@@ -620,7 +620,7 @@ function handleClientDisconnection(pathname, code, reason) {
   logger.info(
     `Client disconnected: ${pathname}. Code: ${code}, Reason: ${
       reason || 'No reason provided'
-    }`,
+    }`
   );
 
   connections.messageQueues.delete(pathname);
@@ -663,14 +663,14 @@ function handleUpstreamDisconnection(pathname, code, reason) {
       'connection',
       'upstream-disconnected',
       pathname,
-      closeInfo,
+      closeInfo
     );
   }
 
   const client = connections.clients.get(pathname);
   if (client) {
     logger.debug(
-      `Closing client connection for ${pathname} due to upstream disconnect`,
+      `Closing client connection for ${pathname} due to upstream disconnect`
     );
     client.ws.close();
     connections.clients.delete(pathname);
@@ -718,7 +718,7 @@ function handleUpstreamError(pathname, error) {
 
   logger.error(
     `Error on the upstream connection to ${upstreamUrl}:`,
-    errorInfo,
+    errorInfo
   );
 
   logCommonErrorTypes(upstreamUrl, error);
@@ -745,7 +745,7 @@ function logCommonErrorTypes(upstreamUrl, error) {
     logger.error(errorMessages[code]);
   } else if (error.message?.includes('unexpected server response')) {
     logger.error(
-      `Unexpected response from ${upstreamUrl}. Server might not support WebSockets.`,
+      `Unexpected response from ${upstreamUrl}. Server might not support WebSockets.`
     );
   }
 }
@@ -796,7 +796,7 @@ function notifyConnectionMasters(connectionId, message, direction) {
         master.ws,
         message,
         'multiplexer',
-        `${master.type}:${master.targetPath}`,
+        `${master.type}:${master.targetPath}`
       );
     }
   }
@@ -814,7 +814,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
       logger.debug(
         `client -> multiplexer on ${pathname}: ping (${
           data?.toString() || 'empty'
-        })`,
+        })`
       );
     });
 
@@ -822,7 +822,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
       logger.debug(
         `client -> multiplexer on ${pathname}: pong (${
           data?.toString() || 'empty'
-        })`,
+        })`
       );
     });
 
@@ -830,7 +830,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
       const upstream = connections.upstreams.get(pathname);
       const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.debug(
-        `${url} -> multiplexer: ping (${data?.toString() || 'empty'})`,
+        `${url} -> multiplexer: ping (${data?.toString() || 'empty'})`
       );
     });
 
@@ -838,7 +838,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
       const upstream = connections.upstreams.get(pathname);
       const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.debug(
-        `${url} -> multiplexer: pong (${data?.toString() || 'empty'})`,
+        `${url} -> multiplexer: pong (${data?.toString() || 'empty'})`
       );
     });
 
@@ -963,12 +963,12 @@ async function setupClientConnection(ws, req) {
   logger.info(
     `Connecting to upstream: ${
       upstreamUrl.href
-    } using protocols: ${protocols} and options: ${JSON.stringify(options)}`,
+    } using protocols: ${protocols} and options: ${JSON.stringify(options)}`
   );
   const upstreamWs = new WebSocket(
     upstreamUrl.href,
     protocols.length > 0 ? protocols : undefined,
-    options,
+    options
   );
 
   // Store connection info
@@ -996,22 +996,22 @@ async function setupClientConnection(ws, req) {
 
   // Forward messages from client to upstream
   ws.on('message', (message) =>
-    handleClientMessage(ws, pathname, message.toString()),
+    handleClientMessage(ws, pathname, message.toString())
   );
 
   // Forward messages from upstream to client
   upstreamWs.on('message', (message) =>
-    handleUpstreamMessage(ws, pathname, message.toString()),
+    handleUpstreamMessage(ws, pathname, message.toString())
   );
 
   // Handle client disconnection
   ws.on('close', (code, reason) =>
-    handleClientDisconnection(pathname, code, reason?.toString()),
+    handleClientDisconnection(pathname, code, reason?.toString())
   );
 
   // Handle upstream disconnection
   upstreamWs.on('close', (code, reason) =>
-    handleUpstreamDisconnection(pathname, code, reason?.toString()),
+    handleUpstreamDisconnection(pathname, code, reason?.toString())
   );
 
   // Handle errors
