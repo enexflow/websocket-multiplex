@@ -10,31 +10,31 @@ const ws = new WebSocket(SERVER_URL + PATH);
 
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout
+  output: process.stdout,
 });
 
 ws.on('open', () => {
   console.log('Connected to WebSocket server!');
   console.log('Type messages and press Enter to send. Type "quit" to exit.\n');
-  
+
   rl.setPrompt('> ');
   rl.prompt();
-  
+
   rl.on('line', (input) => {
     const message = input.trim();
-    
+
     if (message === 'quit') {
       console.log('Closing connection...');
       ws.close();
       rl.close();
       return;
     }
-    
+
     if (message) {
       ws.send(message);
       console.log(`Sent: ${message}`);
     }
-    
+
     rl.prompt();
   });
 });
@@ -46,7 +46,9 @@ ws.on('message', (data) => {
 });
 
 ws.on('close', (code, reason) => {
-  console.log(`\nConnection closed. Code: ${code}, Reason: ${reason || 'No reason provided'}`);
+  console.log(
+    `\nConnection closed. Code: ${code}, Reason: ${reason || 'No reason provided'}`
+  );
   rl.close();
   process.exit(0);
 });
@@ -62,4 +64,4 @@ process.on('SIGINT', () => {
   ws.close();
   rl.close();
   process.exit(0);
-}); 
+});
