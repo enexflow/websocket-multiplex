@@ -49,6 +49,9 @@ jobs:
 
       - name: Check formatting
         run: npx biome format --check .
+  
+      - name: Check formatting
+        run: npm run lint
   test:
     runs-on: ubuntu-latest
     steps:
