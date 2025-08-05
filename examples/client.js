@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const readline = require('readline');
+const readline = require('node:readline');
 
 const SERVER_URL = process.env.WS_URL || 'ws://localhost:8080';
 const PATH = process.env.WS_PATH || '/';

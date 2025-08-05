@@ -67,7 +67,7 @@ process.on('uncaughtException', (error) => {
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   console.error('\nUnhandled promise rejection:', reason);
   if (globalTestRunner) {
     globalTestRunner.cleanup();
@@ -624,21 +624,25 @@ class TestRunner {
 
     // Test 8: Master connection close functionality
     console.log('Test: Master connection close functionality');
-    
+
     // Create a new client for the close test
     const clientForClose = new WebSocketClient(
       `ws://localhost:${this.config.PROXY_PORT}${this.config.TEST_PATH}`,
       testHeaders
     );
     await clientForClose.connect();
-    
+
     // Wait for connection to be established and consume the client-connected notification
     await wait(500);
     const clientConnectedMsg = await masterControl.receiveMessage();
     const clientConnectedData = JSON.parse(clientConnectedMsg);
     assert.equal(clientConnectedData.type, 'connection');
     assert.equal(clientConnectedData.event, 'client-connected');
-    assert.equal(clientForClose.ws.readyState, WebSocket.OPEN, 'Connection should be open');
+    assert.equal(
+      clientForClose.ws.readyState,
+      WebSocket.OPEN,
+      'Connection should be open'
+    );
 
     // Send close command via master
     const closeReason = 'Test closure from master';
@@ -649,7 +653,7 @@ class TestRunner {
         reason: closeReason,
       })
     );
-    
+
     // Verify the connection-closed-by-master notification
     const closedByMasterMsg = await masterControl.receiveMessage();
     const closedByMasterData = JSON.parse(closedByMasterMsg);
@@ -658,16 +662,22 @@ class TestRunner {
     assert.equal(closedByMasterData.connectionId, CONFIG.TEST_PATH);
     assert.equal(closedByMasterData.reason, closeReason);
     assert(closedByMasterData.timestamp);
-    
+
     // Try to send a message - it should fail because the connection is closed
     try {
       await clientForClose.send('This should fail');
       assert.fail('Message should not be sent, connection should be closed');
     } catch (error) {
-      console.log('Connection properly closed, message send failed as expected: ' + error.message);
+      console.log(
+        `Connection properly closed, message send failed as expected: ${error.message}`
+      );
     }
 
-    assert.equal(clientForClose.ws.readyState, WebSocket.CLOSED, 'Connection should be closed');
+    assert.equal(
+      clientForClose.ws.readyState,
+      WebSocket.CLOSED,
+      'Connection should be closed'
+    );
 
     // Test 9: Dynamic upstream configuration
     await this.testDynamicUpstream();
@@ -690,18 +700,22 @@ class TestRunner {
 
     const headers = { 'Content-Type': 'text/plain' };
     const handlers = {
-      '/test-dynamic': (req, res) => 
-        res.writeHead(200, headers).end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-dynamic`),
-      '/test-invalid-url': (req, res) => 
+      '/test-dynamic': (_req, res) =>
+        res
+          .writeHead(200, headers)
+          .end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-dynamic`),
+      '/test-invalid-url': (_req, res) =>
         res.writeHead(200, headers).end('not-a-valid-url'),
-      '/test-invalid-protocol': (req, res) => 
-        res.writeHead(200, headers).end('http://localhost:9000/test')
+      '/test-invalid-protocol': (_req, res) =>
+        res.writeHead(200, headers).end('http://localhost:9000/test'),
     };
 
     // Create a dynamic config server that routes to the alternative upstream
     const configServer = http.createServer((req, res) => {
       const handler = handlers[req.url];
-      return handler ? handler(req, res) : res.writeHead(404, headers).end('Not found');
+      return handler
+        ? handler(req, res)
+        : res.writeHead(404, headers).end('Not found');
     });
 
     const CONFIG_PORT = 9999;

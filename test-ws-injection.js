@@ -66,7 +66,7 @@ function formatMessage(message) {
         compact: false,
         breakLength: 80,
       });
-    } catch (e) {
+    } catch (_e) {
       return message;
     }
   }
@@ -101,7 +101,7 @@ function isOcppMessage(message) {
     }
 
     return false;
-  } catch (e) {
+  } catch (_e) {
     return false;
   }
 }
@@ -109,7 +109,7 @@ function isOcppMessage(message) {
 function parseMessage(message) {
   try {
     return typeof message === 'string' ? JSON.parse(message) : message;
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
 }
@@ -212,17 +212,6 @@ function logOcppMessage(message) {
   return true;
 }
 
-// Format timestamp in a friendly way
-function formatTimestamp() {
-  const now = new Date();
-  return now.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
 // Parse command line arguments
 function parseArgs() {
   if (process.argv.length !== 3) {
@@ -319,20 +308,35 @@ function handleNonOcppMessage(message) {
   console.log(formatMessage(message));
 }
 
-function handleWebSocketError(error) {
-  console.error('❌ WebSocket error:', error.message);
-  process.exit(1);
+function createWebSocketErrorHandler(timeoutId, setConnectionClosed) {
+  return (error) => {
+    clearTimeout(timeoutId);
+    setConnectionClosed();
+    console.error('❌ WebSocket error:', error.message);
+    process.exit(1);
+  };
 }
 
-function handleWebSocketClose(code, reason) {
-  const reasonStr = reason ? reason.toString() : 'No reason provided';
-  console.log('👋 Connection closed');
-  console.log(`Code: ${code}`);
-  console.log(`Reason: ${reasonStr}`);
-  process.exit(0);
+function createWebSocketCloseHandler(timeoutId, setConnectionClosed) {
+  return (code, reason) => {
+    clearTimeout(timeoutId);
+    setConnectionClosed();
+    const reasonStr = reason ? reason.toString() : 'No reason provided';
+    console.log('👋 Connection closed');
+    console.log(`Code: ${code}`);
+    console.log(`Reason: ${reasonStr}`);
+    process.exit(0);
+  };
 }
 
-function setupWebSocketHandlers(ws, target, message) {
+function setupWebSocketHandlers(
+  ws,
+  target,
+  message,
+  timeoutId,
+  setConnectionClosed,
+  setMessageSent
+) {
   const parsedMessage = parseMessage(message);
   const requestMessageId = isOcppMessage(message)
     ? getOcppMessageId(parsedMessage)
@@ -340,8 +344,10 @@ function setupWebSocketHandlers(ws, target, message) {
 
   ws.on('open', () => {
     console.log('✅ Connected to master server');
+    clearTimeout(timeoutId);
     logInjectionDetails(target, message);
     ws.send(JSON.stringify(createInjectionMessage(target, message)));
+    setMessageSent();
   });
 
   ws.on('message', (data) => {
@@ -367,20 +373,20 @@ function setupWebSocketHandlers(ws, target, message) {
           if (!logOcppMessage(message)) {
             handleNonOcppMessage(message);
           }
-        } catch (e) {
+        } catch (_e) {
           handleNonOcppMessage(response.message);
         }
         return;
       }
 
       handleNonOcppMessage(response);
-    } catch (error) {
+    } catch (_error) {
       handleNonOcppMessage(data.toString());
     }
   });
 
-  ws.on('error', handleWebSocketError);
-  ws.on('close', handleWebSocketClose);
+  ws.on('error', createWebSocketErrorHandler(timeoutId, setConnectionClosed));
+  ws.on('close', createWebSocketCloseHandler(timeoutId, setConnectionClosed));
 }
 
 function injectMessage(target, message) {
@@ -388,8 +394,8 @@ function injectMessage(target, message) {
   console.log(`🔌 Connecting to master server at ${MASTER_URL}`);
 
   const ws = new WebSocket(MASTER_URL);
-  const connectionClosed = false;
-  const messageSent = false;
+  let connectionClosed = false;
+  let _messageSent = false;
 
   const timeoutId = setTimeout(() => {
     if (!connectionClosed) {
@@ -399,7 +405,18 @@ function injectMessage(target, message) {
     }
   }, TIMEOUT);
 
-  setupWebSocketHandlers(ws, target, message);
+  setupWebSocketHandlers(
+    ws,
+    target,
+    message,
+    timeoutId,
+    () => {
+      connectionClosed = true;
+    },
+    () => {
+      _messageSent = true;
+    }
+  );
 }
 
 // Main function

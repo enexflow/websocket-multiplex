@@ -53,7 +53,7 @@ function formatMessage(message) {
         compact: false,
         breakLength: 80,
       });
-    } catch (e) {
+    } catch (_e) {
       return message;
     }
   }
@@ -164,7 +164,7 @@ function listenToMessages(target) {
           )
         );
       }
-    } catch (error) {
+    } catch (_error) {
       console.log(
         createMessageBox('raw', 'unknown', 'unknown', data.toString())
       );
