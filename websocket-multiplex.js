@@ -165,7 +165,7 @@ function sendMessage(ws, message, source, target) {
 
 /**
  * Handles message injection from master to specified targets
- * @param {{ target: string, message: string | Buffer }} data - The message data containing target and message
+ * @param {InjectionMessage} data - The message data containing target and message
  */
 function handleMasterInjection(data) {
   if (data.target === 'all-clients') {
@@ -211,7 +211,7 @@ function handleMasterInjection(data) {
 
 /**
  * Handles connection closure requests from master
- * @param {{ connectionId: string, reason?: string }} data - The close data containing connection ID and optional reason
+ * @param {CloseMessage} data - The close data containing connection ID and optional reason
  */
 function handleMasterClose(data) {
   const connectionId = data.connectionId;
@@ -250,39 +250,109 @@ function handleMasterClose(data) {
 }
 
 /**
+ * @typedef {Object} InjectionMessage
+ * @property {'inject'} type - Message type
+ * @property {string} target - Target for injection ('all-clients', 'all-upstreams', 'client:...', 'upstream:...')
+ * @property {string | Buffer} message - Message to inject
+ */
+
+/**
+ * @typedef {Object} CloseMessage
+ * @property {'close'} type - Message type
+ * @property {string} connectionId - Connection ID to close
+ * @property {string} [reason] - Optional reason for closure
+ */
+
+/**
+ * Validates an injection message
+ * @param {any} data - Data to validate
+ * @returns {data is InjectionMessage} True if valid injection message
+ */
+function validateInjectionMessage(data) {
+  return (
+    data &&
+    typeof data === 'object' &&
+    data.type === 'inject' &&
+    typeof data.target === 'string' &&
+    data.target.length > 0 &&
+    (typeof data.message === 'string' || Buffer.isBuffer(data.message))
+  );
+}
+
+/**
+ * Validates a close message
+ * @param {any} data - Data to validate
+ * @returns {data is CloseMessage} True if valid close message
+ */
+function validateCloseMessage(data) {
+  return (
+    data &&
+    typeof data === 'object' &&
+    data.type === 'close' &&
+    typeof data.connectionId === 'string' &&
+    data.connectionId.length > 0
+  );
+}
+
+/**
+ * Handles messages from root master connections
+ * @param {string} message - The message received
+ * @throws {Error} When message is invalid
+ */
+function handleRootMasterMessage(message) {
+  const data = JSON.parse(message);
+  logger.debug(
+    `multiplexer <- master client: root ${JSON.stringify(data)}`
+  );
+
+  if (validateInjectionMessage(data)) return handleMasterInjection(data);
+  else if (validateCloseMessage(data)) return handleMasterClose(data);
+  else throw new Error(`Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`);
+}
+
+/**
+ * Handles messages from master connection with type = 'client'
+ * @param {string} targetPath - The target client path
+ * @param {string} message - The message to forward
+ */
+function handleMasterMessageForClient(targetPath, message) {
+  const client = connections.clients.get(targetPath);
+  if (client?.connected) {
+    sendMessage(client.ws, message, 'master', `client:${targetPath}`);
+  }
+}
+
+/**
+ * Handles messages from master connection with type = 'upstream'
+ * @param {string} targetPath - The target upstream path
+ * @param {string} message - The message to forward
+ */
+function handleMasterMessageForUpstream(targetPath, message) {
+  const upstream = connections.upstreams.get(targetPath);
+  if (upstream?.connected) {
+    sendMessage(upstream.ws, message, 'master', `upstream:${targetPath}`);
+  }
+}
+
+/**
  * Handles messages received from the master connection
  * @param { MasterConnection } masterConnection - The master WebSocket connection
  * @param {string} message - The message received
  */
 function handleMasterMessage(masterConnection, message) {
-  const { path, type, targetPath, ws } = masterConnection;
-  if (type === 'root') {
-    try {
-      const data = JSON.parse(message);
-      logger.debug(
-        `multiplexer <- master client: ${type} ${JSON.stringify(data)}`
-      );
-
-      if (data.type === 'inject' && data.target && data.message) {
-        handleMasterInjection(data);
-      } else if (data.type === 'close' && data.connectionId) {
-        handleMasterClose(data);
-      }
-    } catch (error) {
-      logger.error('Error processing master message:', error);
+  const { type, targetPath } = masterConnection;
+  
+  try {
+    switch (type) {
+      case 'root':
+        return handleRootMasterMessage(message);
+      case 'client':
+        return handleMasterMessageForClient(targetPath, message);
+      case 'upstream':
+        return handleMasterMessageForUpstream(targetPath, message);
     }
-  } else {
-    if (type === 'client') {
-      const client = connections.clients.get(targetPath);
-      if (client?.connected) {
-        sendMessage(client.ws, message, 'master', `client:${targetPath}`);
-      }
-    } else if (type === 'upstream') {
-      const upstream = connections.upstreams.get(targetPath);
-      if (upstream?.connected) {
-        sendMessage(upstream.ws, message, 'master', `upstream:${targetPath}`);
-      }
-    }
+  } catch (error) {
+    logger.error('Error processing master message:', error);
   }
 }
 
