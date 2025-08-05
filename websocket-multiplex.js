@@ -641,7 +641,7 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 
 /**
  * Handles messages from client to upstream
- * @param {WebSocket} ws - The client WebSocket connection
+ * @param {WebSocket} _ws - The client WebSocket connection
  * @param {string} pathname - The connection identifier
  * @param {string | Buffer} message - The message received
  */
