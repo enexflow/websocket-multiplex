@@ -131,12 +131,13 @@ The multiplexer sends several types of messages to the master control:
 ```javascript
 {
   type: 'connection',
-  event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected'
+  event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected', 'connection-closed-by-master'
   connectionId: '/path',
   ip: '127.0.0.1',           // Only for client-connected
   headers: { ... },          // Only for client-connected
   code: 1000,                // Only for disconnection events
-  reason: 'Normal closure'   // Only for disconnection events
+  reason: 'Normal closure',  // Only for disconnection events
+  timestamp: '2024-01-01T12:00:00.000Z'  // Only for connection-closed-by-master
 }
 ```
 
@@ -277,6 +278,24 @@ master.send(JSON.stringify({
   message: 'Broadcast to all upstreams'
 }));
 ```
+
+### Example: Closing Connections
+
+You can cleanly close specific connections through the master control:
+
+```javascript
+// Close a specific connection (both client and upstream)
+master.send(JSON.stringify({
+  type: 'close',
+  connectionId: '/chat',
+  reason: 'Connection terminated by administrator'  // Optional reason
+}));
+```
+
+When a connection is closed via master control:
+- Both client and upstream connections are closed cleanly with code 1000
+- Message queues for the connection are cleared
+- A notification is sent to all root master connections with event type `connection-closed-by-master`
 
 ## Dynamic Upstream Configuration
 

@@ -622,7 +622,54 @@ class TestRunner {
     assert.equal(disconnectData.event, 'client-disconnected');
     assert.equal(disconnectData.connectionId, CONFIG.TEST_PATH);
 
-    // Test 8: Dynamic upstream configuration
+    // Test 8: Master connection close functionality
+    console.log('Test: Master connection close functionality');
+    
+    // Create a new client for the close test
+    const clientForClose = new WebSocketClient(
+      `ws://localhost:${this.config.PROXY_PORT}${this.config.TEST_PATH}`,
+      testHeaders
+    );
+    await clientForClose.connect();
+    
+    // Wait for connection to be established and consume the client-connected notification
+    await wait(500);
+    const clientConnectedMsg = await masterControl.receiveMessage();
+    const clientConnectedData = JSON.parse(clientConnectedMsg);
+    assert.equal(clientConnectedData.type, 'connection');
+    assert.equal(clientConnectedData.event, 'client-connected');
+    assert.equal(clientForClose.ws.readyState, WebSocket.OPEN, 'Connection should be open');
+
+    // Send close command via master
+    const closeReason = 'Test closure from master';
+    await masterControl.send(
+      JSON.stringify({
+        type: 'close',
+        connectionId: this.config.TEST_PATH,
+        reason: closeReason,
+      })
+    );
+    
+    // Verify the connection-closed-by-master notification
+    const closedByMasterMsg = await masterControl.receiveMessage();
+    const closedByMasterData = JSON.parse(closedByMasterMsg);
+    assert.equal(closedByMasterData.type, 'connection');
+    assert.equal(closedByMasterData.event, 'connection-closed-by-master');
+    assert.equal(closedByMasterData.connectionId, CONFIG.TEST_PATH);
+    assert.equal(closedByMasterData.reason, closeReason);
+    assert(closedByMasterData.timestamp);
+    
+    // Try to send a message - it should fail because the connection is closed
+    try {
+      await clientForClose.send('This should fail');
+      assert.fail('Message should not be sent, connection should be closed');
+    } catch (error) {
+      console.log('Connection properly closed, message send failed as expected: ' + error.message);
+    }
+
+    assert.equal(clientForClose.ws.readyState, WebSocket.CLOSED, 'Connection should be closed');
+
+    // Test 9: Dynamic upstream configuration
     await this.testDynamicUpstream();
 
     // Cleanup
