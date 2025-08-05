@@ -688,21 +688,20 @@ class TestRunner {
     const dynamicUpstream = new TestServer(DYNAMIC_UPSTREAM_PORT);
     await dynamicUpstream.start();
 
+    const headers = { 'Content-Type': 'text/plain' };
+    const handlers = {
+      '/test-dynamic': (req, res) => 
+        res.writeHead(200, headers).end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-dynamic`),
+      '/test-invalid-url': (req, res) => 
+        res.writeHead(200, headers).end('not-a-valid-url'),
+      '/test-invalid-protocol': (req, res) => 
+        res.writeHead(200, headers).end('http://localhost:9000/test')
+    };
+
     // Create a dynamic config server that routes to the alternative upstream
     const configServer = http.createServer((req, res) => {
-      if (req.url === '/test-dynamic') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-dynamic`);
-      } else if (req.url === '/test-invalid-url') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('not-a-valid-url');
-      } else if (req.url === '/test-invalid-protocol') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('http://localhost:9000/test');
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
-      }
+      const handler = handlers[req.url];
+      return handler ? handler(req, res) : res.writeHead(404, headers).end('Not found');
     });
 
     const CONFIG_PORT = 9999;
