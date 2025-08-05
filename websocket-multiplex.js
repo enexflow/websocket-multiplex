@@ -271,32 +271,32 @@ function handleMasterInjection(data) {
 function handleMasterClose(data) {
   const connectionId = data.connectionId;
   const reason = data.reason || 'Closed by websocket-multiplex master control';
-  
+
   logger.info(`Master requesting to close connection: ${connectionId}`);
-  
+
   const client = connections.clients.get(connectionId);
   const upstream = connections.upstreams.get(connectionId);
-  
+
   if (!client && !upstream) {
     logger.warn(`Connection ${connectionId} not found for closure`);
     return;
   }
-  
+
   // Close client connection if it exists
   if (client && client.ws.readyState === WebSocket.OPEN) {
     logger.info(`Closing client connection for ${connectionId}`);
     client.ws.close(1000, reason);
   }
-  
+
   // Close upstream connection if it exists
   if (upstream && upstream.ws.readyState === WebSocket.OPEN) {
     logger.info(`Closing upstream connection for ${connectionId}`);
     upstream.ws.close(1000, reason);
   }
-  
+
   // Clean up message queue
   connections.messageQueues.delete(connectionId);
-  
+
   // Notify root masters about the forced closure
   notifyRootMasters('connection', 'connection-closed-by-master', connectionId, {
     reason,
@@ -356,13 +356,14 @@ function validateCloseMessage(data) {
  */
 function handleRootMasterMessage(message) {
   const data = JSON.parse(message);
-  logger.debug(
-    `multiplexer <- master client: root ${JSON.stringify(data)}`
-  );
+  logger.debug(`multiplexer <- master client: root ${JSON.stringify(data)}`);
 
   if (validateInjectionMessage(data)) return handleMasterInjection(data);
   else if (validateCloseMessage(data)) return handleMasterClose(data);
-  else throw new Error(`Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`);
+  else
+    throw new Error(
+      `Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`
+    );
 }
 
 /**
@@ -396,7 +397,7 @@ function handleMasterMessageForUpstream(targetPath, message) {
  */
 function handleMasterMessage(masterConnection, message) {
   const { type, targetPath } = masterConnection;
-  
+
   try {
     switch (type) {
       case 'root':
@@ -640,11 +641,11 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 
 /**
  * Handles messages from client to upstream
- * @param {WebSocket} ws - The client WebSocket connection
+ * @param {WebSocket} _ws - The client WebSocket connection
  * @param {string} pathname - The connection identifier
  * @param {string | Buffer} message - The message received
  */
-function handleClientMessage(ws, pathname, message) {
+function handleClientMessage(_ws, pathname, message) {
   const upstream = connections.upstreams.get(pathname);
 
   logMessageIfDebug(
@@ -961,7 +962,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
  * @param {string} pathname - The connection identifier
  */
 function setupAdvancedDebugListeners(upstreamWs, pathname) {
-  upstreamWs.on('unexpected-response', (request, response) => {
+  upstreamWs.on('unexpected-response', (_request, response) => {
     handleUnexpectedResponse(pathname, response);
   });
 
