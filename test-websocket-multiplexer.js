@@ -720,7 +720,6 @@ class TestRunner {
     const dynamicEnv = {
       ...process.env,
       PORT: DYNAMIC_MULTIPLEXER_PORT.toString(),
-      MASTER_PORT: (this.config.MASTER_PORT + 10).toString(),
       UPSTREAM_URL: `ws://localhost:${this.config.TEST_PORT}`, // Default fallback
       DYNAMIC_UPSTREAM_CONFIG_URL: `http://localhost:${CONFIG_PORT}`,
       LOG_LEVEL: 'DEBUG',
