@@ -1,8 +1,8 @@
-name: Push to ECR
+name: Push docker images
 
 on:
   push:
-    branches: [ staging, prod ]
+    branches: [ staging, prod, test-push-img]
 
 jobs:
   push-to-ecr:
@@ -53,7 +53,7 @@ jobs:
           context: ./
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/ws-multiplexer:${{ steps.branch.outputs.branch }}-${{ steps.date.outputs.date }}-${{ github.sha }},${{ steps.login-ecr.outputs.registry }}/ws-multiplexer:latest
+          tags: ${{ steps.login-ecr.outputs.registry }}/ws-multiplexer:${{ steps.branch.outputs.branch }}-${{ steps.date.outputs.date }}-${{ github.sha }},${{ steps.login-ecr.outputs.registry }}/ws-multiplexer:latest,ghcr.io/enexflow/websocket-multiplex:latest,ghcr.io/enexflow/websocket-multiplex:${{ steps.branch.outputs.branch }}-${{ steps.date.outputs.date }}-${{ github.sha }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
