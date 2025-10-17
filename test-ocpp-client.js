@@ -196,11 +196,11 @@ ws.on('error', (error) => {
   console.error('WebSocket error:', error);
 });
 
-ws.on('upgrade', (request, socket, head) => {
+ws.on('upgrade', (request, _socket, _head) => {
   console.log('Upgraded: ', request.headers);
 });
 
-ws.on('unexpected-response', (request, response) => {
+ws.on('unexpected-response', (_request, response) => {
   console.log(
     'Unexpected response:',
     response.statusCode,

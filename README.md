@@ -35,6 +35,7 @@ The multiplexer can be configured using environment variables:
 - `PORT`: The port on which the multiplexer will listen for client connections (default: 8080)
 - `MASTER_PORT`: The port on which the master control interface will be available (default: 8081)
 - `UPSTREAM_URL`: The WebSocket server to which connections will be forwarded (default: ws://localhost:9000)
+- `DYNAMIC_UPSTREAM_CONFIG_URL`: Optional URL for dynamic upstream resolution. When set, the multiplexer will make HTTP GET requests to `DYNAMIC_UPSTREAM_CONFIG_URL + pathname` to resolve the upstream URL for each connection. Falls back to `UPSTREAM_URL` on failure.
 - `LOG_LEVEL`: Controls the verbosity of logging (default: INFO)
 - `MESSAGE_QUEUE_TIMEOUT`: Time in milliseconds before queued messages are discarded (default: 30000)
 
@@ -130,12 +131,13 @@ The multiplexer sends several types of messages to the master control:
 ```javascript
 {
   type: 'connection',
-  event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected'
+  event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected', 'connection-closed-by-master'
   connectionId: '/path',
   ip: '127.0.0.1',           // Only for client-connected
   headers: { ... },          // Only for client-connected
   code: 1000,                // Only for disconnection events
-  reason: 'Normal closure'   // Only for disconnection events
+  reason: 'Normal closure',  // Only for disconnection events
+  timestamp: '2024-01-01T12:00:00.000Z'  // Only for connection-closed-by-master
 }
 ```
 
@@ -276,6 +278,38 @@ master.send(JSON.stringify({
   message: 'Broadcast to all upstreams'
 }));
 ```
+
+### Example: Closing Connections
+
+You can cleanly close specific connections through the master control:
+
+```javascript
+// Close a specific connection (both client and upstream)
+master.send(JSON.stringify({
+  type: 'close',
+  connectionId: '/chat',
+  reason: 'Connection terminated by administrator'  // Optional reason
+}));
+```
+
+When a connection is closed via master control:
+- Both client and upstream connections are closed cleanly with code 1000
+- Message queues for the connection are cleared
+- A notification is sent to all root master connections with event type `connection-closed-by-master`
+
+## Dynamic Upstream Configuration
+
+When `DYNAMIC_UPSTREAM_CONFIG_URL` is set, the multiplexer will make HTTP GET requests to resolve upstream URLs dynamically for each connection:
+
+```bash
+DYNAMIC_UPSTREAM_CONFIG_URL=http://localhost:3000/api/upstream node websocket-multiplex.js
+```
+
+For a client connecting to `/chat`, the multiplexer will:
+1. Make a GET request to `http://localhost:3000/api/upstream/chat`
+2. Expect a plain text response with the upstream URL (e.g., `ws://chat-server:9001/chat`)
+3. Use that URL for the upstream connection
+4. Fall back to `UPSTREAM_URL + /chat` if the request fails
 
 ## Use Cases
 

@@ -6,6 +6,7 @@ const url = require('node:url');
 const PORT = process.env.PORT || 8080;
 const MASTER_PORT = process.env.MASTER_PORT || 8081;
 const UPSTREAM_URL = process.env.UPSTREAM_URL || 'ws://localhost:9000';
+const DYNAMIC_UPSTREAM_CONFIG_URL = process.env.DYNAMIC_UPSTREAM_CONFIG_URL;
 const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
 const MESSAGE_QUEUE_TIMEOUT =
   Number(process.env.MESSAGE_QUEUE_TIMEOUT) || 30000; // 30 seconds default
@@ -64,9 +65,63 @@ const masterWsOptions = {
 };
 
 /**
+ * Resolves the upstream URL for a given pathname using dynamic configuration if available
+ * @param {string} pathname - The connection path
+ * @returns {Promise<URL>} The resolved upstream URL
+ */
+async function resolveUpstreamUrl(pathname) {
+  const defaultUrl = new URL(UPSTREAM_URL + pathname);
+  if (!DYNAMIC_UPSTREAM_CONFIG_URL) {
+    return defaultUrl;
+  }
+
+  try {
+    const configUrl = DYNAMIC_UPSTREAM_CONFIG_URL + pathname;
+    logger.debug(`Requesting dynamic upstream config from: ${configUrl}`);
+
+    const response = await fetch(configUrl, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000), // 5 second timeout
+    });
+
+    if (!response.ok)
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+    const upstreamUrlString = (await response.text()).trim();
+
+    // Validate that the response is a valid URL
+    let upstreamUrl;
+    try {
+      upstreamUrl = new URL(upstreamUrlString);
+    } catch (urlError) {
+      throw new Error(
+        `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`
+      );
+    }
+
+    // Validate that it's a WebSocket URL
+    if (upstreamUrl.protocol !== 'ws:' && upstreamUrl.protocol !== 'wss:') {
+      throw new Error(
+        `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`
+      );
+    }
+
+    logger.info(
+      `Dynamic upstream resolved for ${pathname}: ${upstreamUrl.href}`
+    );
+    return upstreamUrl;
+  } catch (error) {
+    logger.warn(
+      `Dynamic upstream resolution failed for ${pathname}: ${error.message}. Using default: ${defaultUrl.href}`
+    );
+    return defaultUrl;
+  }
+}
+
+/**
  * Global connection store for tracking all active connections
- * @typedef {{ ws: WebSocket, connected: boolean, upstreamId: string }} ClientConnection
- * @typedef {{ ws: WebSocket, connected: boolean, clientId: string }} UpstreamConnection
+ * @typedef {{ ws: WebSocket, connected: boolean, upstreamId: string, upstreamUrl: URL }} ClientConnection
+ * @typedef {{ ws: WebSocket, connected: boolean, clientId: string, upstreamUrl: URL }} UpstreamConnection
  * @typedef {{ ws: WebSocket, path: string, type: 'root' | 'client' | 'upstream', targetPath: string }} MasterConnection
  * @typedef {{ message: string | Buffer, timestamp: string }} QueuedMessage
  * @typedef {{
@@ -165,7 +220,7 @@ function sendMessage(ws, message, source, target) {
 
 /**
  * Handles message injection from master to specified targets
- * @param {{ target: string, message: string | Buffer }} data - The message data containing target and message
+ * @param {InjectionMessage} data - The message data containing target and message
  */
 function handleMasterInjection(data) {
   if (data.target === 'all-clients') {
@@ -210,40 +265,150 @@ function handleMasterInjection(data) {
 }
 
 /**
+ * Handles connection closure requests from master
+ * @param {CloseMessage} data - The close data containing connection ID and optional reason
+ */
+function handleMasterClose(data) {
+  const connectionId = data.connectionId;
+  const reason = data.reason || 'Closed by websocket-multiplex master control';
+
+  logger.info(`Master requesting to close connection: ${connectionId}`);
+
+  const client = connections.clients.get(connectionId);
+  const upstream = connections.upstreams.get(connectionId);
+
+  if (!client && !upstream) {
+    logger.warn(`Connection ${connectionId} not found for closure`);
+    return;
+  }
+
+  // Close client connection if it exists
+  if (client && client.ws.readyState === WebSocket.OPEN) {
+    logger.info(`Closing client connection for ${connectionId}`);
+    client.ws.close(1000, reason);
+  }
+
+  // Close upstream connection if it exists
+  if (upstream && upstream.ws.readyState === WebSocket.OPEN) {
+    logger.info(`Closing upstream connection for ${connectionId}`);
+    upstream.ws.close(1000, reason);
+  }
+
+  // Clean up message queue
+  connections.messageQueues.delete(connectionId);
+
+  // Notify root masters about the forced closure
+  notifyRootMasters('connection', 'connection-closed-by-master', connectionId, {
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * @typedef {Object} InjectionMessage
+ * @property {'inject'} type - Message type
+ * @property {string} target - Target for injection ('all-clients', 'all-upstreams', 'client:...', 'upstream:...')
+ * @property {string | Buffer} message - Message to inject
+ */
+
+/**
+ * @typedef {Object} CloseMessage
+ * @property {'close'} type - Message type
+ * @property {string} connectionId - Connection ID to close
+ * @property {string} [reason] - Optional reason for closure
+ */
+
+/**
+ * Validates an injection message
+ * @param {any} data - Data to validate
+ * @returns {data is InjectionMessage} True if valid injection message
+ */
+function validateInjectionMessage(data) {
+  return (
+    data &&
+    typeof data === 'object' &&
+    data.type === 'inject' &&
+    typeof data.target === 'string' &&
+    data.target.length > 0 &&
+    (typeof data.message === 'string' || Buffer.isBuffer(data.message))
+  );
+}
+
+/**
+ * Validates a close message
+ * @param {any} data - Data to validate
+ * @returns {data is CloseMessage} True if valid close message
+ */
+function validateCloseMessage(data) {
+  return (
+    data &&
+    typeof data === 'object' &&
+    data.type === 'close' &&
+    typeof data.connectionId === 'string' &&
+    data.connectionId.length > 0
+  );
+}
+
+/**
+ * Handles messages from root master connections
+ * @param {string} message - The message received
+ * @throws {Error} When message is invalid
+ */
+function handleRootMasterMessage(message) {
+  const data = JSON.parse(message);
+  logger.debug(`multiplexer <- master client: root ${JSON.stringify(data)}`);
+
+  if (validateInjectionMessage(data)) return handleMasterInjection(data);
+  else if (validateCloseMessage(data)) return handleMasterClose(data);
+  else
+    throw new Error(
+      `Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`
+    );
+}
+
+/**
+ * Handles messages from master connection with type = 'client'
+ * @param {string} targetPath - The target client path
+ * @param {string} message - The message to forward
+ */
+function handleMasterMessageForClient(targetPath, message) {
+  const client = connections.clients.get(targetPath);
+  if (client?.connected) {
+    sendMessage(client.ws, message, 'master', `client:${targetPath}`);
+  }
+}
+
+/**
+ * Handles messages from master connection with type = 'upstream'
+ * @param {string} targetPath - The target upstream path
+ * @param {string} message - The message to forward
+ */
+function handleMasterMessageForUpstream(targetPath, message) {
+  const upstream = connections.upstreams.get(targetPath);
+  if (upstream?.connected) {
+    sendMessage(upstream.ws, message, 'master', `upstream:${targetPath}`);
+  }
+}
+
+/**
  * Handles messages received from the master connection
  * @param { MasterConnection } masterConnection - The master WebSocket connection
  * @param {string} message - The message received
  */
 function handleMasterMessage(masterConnection, message) {
-  const { path, type, targetPath, ws } = masterConnection;
-  if (type === 'root') {
-    try {
-      /** @type {{ type: string, target: string, message: string }} */
-      const data = JSON.parse(message);
-      const target = data.target;
-      const contents = data.message;
-      logger.debug(
-        `multiplexer <- master client: ${type} ${target} ${contents}`
-      );
+  const { type, targetPath } = masterConnection;
 
-      if (data.type === 'inject') {
-        handleMasterInjection(data);
-      }
-    } catch (error) {
-      logger.error('Error processing master message:', error);
+  try {
+    switch (type) {
+      case 'root':
+        return handleRootMasterMessage(message);
+      case 'client':
+        return handleMasterMessageForClient(targetPath, message);
+      case 'upstream':
+        return handleMasterMessageForUpstream(targetPath, message);
     }
-  } else {
-    if (type === 'client') {
-      const client = connections.clients.get(targetPath);
-      if (client?.connected) {
-        sendMessage(client.ws, message, 'master', `client:${targetPath}`);
-      }
-    } else if (type === 'upstream') {
-      const upstream = connections.upstreams.get(targetPath);
-      if (upstream?.connected) {
-        sendMessage(upstream.ws, message, 'master', `upstream:${targetPath}`);
-      }
-    }
+  } catch (error) {
+    logger.error('Error processing master message:', error);
   }
 }
 
@@ -289,7 +454,9 @@ function setupMasterConnection(ws, req) {
 
   ws.on('close', (code, reason) => {
     logger.info(
-      `Master control disconnected from ${pathname}. Code: ${code}, Reason: ${reason || 'No reason provided'}`
+      `Master control disconnected from ${pathname}. Code: ${code}, Reason: ${
+        reason || 'No reason provided'
+      }`
     );
     connections.masters.delete(masterConnection);
   });
@@ -317,13 +484,13 @@ function processQueuedMessages(pathname) {
         upstream.ws,
         queuedMessage.message,
         'multiplexer',
-        `${UPSTREAM_URL}${pathname}`
+        upstream.upstreamUrl.href
       );
 
       if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
         const messageStr = queuedMessage.message.toString();
         logger.debug(
-          `multiplexer -> ${UPSTREAM_URL}${pathname}: ${messageStr} (dequeued)`
+          `multiplexer -> ${upstream.upstreamUrl.href}: ${messageStr} (dequeued)`
         );
       }
 
@@ -362,7 +529,7 @@ function handleUpstreamOpen(upstreamWs, pathname) {
 
   // Log connection details
   logger.debug(`Upstream connection for ${pathname}:`, {
-    url: UPSTREAM_URL + pathname,
+    url: upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`,
     protocol: upstreamWs.protocol,
   });
 
@@ -415,8 +582,10 @@ function setupMessageTimeout(pathname, queuedMessage) {
 
     if (index !== -1) {
       currentQueue.splice(index, 1);
+      const upstream = connections.upstreams.get(pathname);
+      const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.warn(
-        `Message for ${UPSTREAM_URL + pathname} timed out after ${MESSAGE_QUEUE_TIMEOUT}ms and was discarded`
+        `Message for ${url} timed out after ${MESSAGE_QUEUE_TIMEOUT}ms and was discarded`
       );
 
       notifyMasterAboutDiscardedMessage(pathname, queuedMessage);
@@ -472,24 +641,24 @@ function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
 
 /**
  * Handles messages from client to upstream
- * @param {WebSocket} ws - The client WebSocket connection
+ * @param {WebSocket} _ws - The client WebSocket connection
  * @param {string} pathname - The connection identifier
  * @param {string | Buffer} message - The message received
  */
-function handleClientMessage(ws, pathname, message) {
+function handleClientMessage(_ws, pathname, message) {
   const upstream = connections.upstreams.get(pathname);
 
-  logMessageIfDebug('Client → Upstream', pathname, message);
+  logMessageIfDebug(
+    'Client → Upstream',
+    pathname,
+    message,
+    upstream?.upstreamUrl
+  );
   notifyMasterAboutMessage('client-to-upstream', pathname, message);
 
   // Forward to upstream if connected
   if (upstream?.connected) {
-    sendMessage(
-      upstream.ws,
-      message,
-      'multiplexer',
-      `${UPSTREAM_URL}${pathname}`
-    );
+    sendMessage(upstream.ws, message, 'multiplexer', upstream.upstreamUrl.href);
   } else {
     queueMessage(pathname, message);
   }
@@ -502,7 +671,13 @@ function handleClientMessage(ws, pathname, message) {
  * @param {string | Buffer} message - The message received
  */
 function handleUpstreamMessage(ws, pathname, message) {
-  logMessageIfDebug('Upstream → Client', pathname, message);
+  const upstream = connections.upstreams.get(pathname);
+  logMessageIfDebug(
+    'Upstream → Client',
+    pathname,
+    message,
+    upstream?.upstreamUrl
+  );
   notifyMasterAboutMessage('upstream-to-client', pathname, message);
 
   // Forward to client
@@ -514,16 +689,16 @@ function handleUpstreamMessage(ws, pathname, message) {
  * @param {string} direction - The message direction
  * @param {string} pathname - The connection identifier
  * @param {string | Buffer} message - The message to log
+ * @param {URL} [upstreamUrl] - The resolved upstream URL (optional)
  */
-function logMessageIfDebug(direction, pathname, message) {
+function logMessageIfDebug(direction, pathname, message, upstreamUrl) {
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     const messageStr = message.toString();
     if (direction === 'Client → Upstream') {
       logger.debug(`client -> multiplexer:${pathname}: ${messageStr}`);
     } else if (direction === 'Upstream → Client') {
-      logger.debug(
-        `${UPSTREAM_URL}${pathname} -> multiplexer: ${messageStr}`
-      );
+      const url = upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
+      logger.debug(`${url} -> multiplexer: ${messageStr}`);
     }
   }
 }
@@ -553,7 +728,9 @@ function notifyMasterAboutMessage(direction, connectionId, message) {
  */
 function handleClientDisconnection(pathname, code, reason) {
   logger.info(
-    `Client disconnected: ${pathname}. Code: ${code}, Reason: ${reason || 'No reason provided'}`
+    `Client disconnected: ${pathname}. Code: ${code}, Reason: ${
+      reason || 'No reason provided'
+    }`
   );
 
   connections.messageQueues.delete(pathname);
@@ -637,7 +814,9 @@ function logImportantCloseCodes(pathname, code) {
  * @param {Error} error - The error object
  */
 function handleUpstreamError(pathname, error) {
-  const upstreamUrl = UPSTREAM_URL + pathname;
+  const upstream = connections.upstreams.get(pathname);
+  const upstreamUrl =
+    upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
   const code = 'code' in error ? error.code : 'unknown';
   const errorInfo = {
     message: error.message,
@@ -743,25 +922,33 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
     ws.on('ping', (data) => {
       logger.debug(
-        `client -> multiplexer on ${pathname}: ping (${data?.toString() || 'empty'})`
+        `client -> multiplexer on ${pathname}: ping (${
+          data?.toString() || 'empty'
+        })`
       );
     });
 
     ws.on('pong', (data) => {
       logger.debug(
-        `client -> multiplexer on ${pathname}: pong (${data?.toString() || 'empty'})`
+        `client -> multiplexer on ${pathname}: pong (${
+          data?.toString() || 'empty'
+        })`
       );
     });
 
     upstreamWs.on('ping', (data) => {
+      const upstream = connections.upstreams.get(pathname);
+      const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.debug(
-        `${UPSTREAM_URL}${pathname} -> multiplexer: ping (${data?.toString() || 'empty'})`
+        `${url} -> multiplexer: ping (${data?.toString() || 'empty'})`
       );
     });
 
     upstreamWs.on('pong', (data) => {
+      const upstream = connections.upstreams.get(pathname);
+      const url = upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
       logger.debug(
-        `${UPSTREAM_URL}${pathname} -> multiplexer: pong (${data?.toString() || 'empty'})`
+        `${url} -> multiplexer: pong (${data?.toString() || 'empty'})`
       );
     });
 
@@ -775,7 +962,7 @@ function setupDebugEventListeners(ws, upstreamWs, pathname) {
  * @param {string} pathname - The connection identifier
  */
 function setupAdvancedDebugListeners(upstreamWs, pathname) {
-  upstreamWs.on('unexpected-response', (request, response) => {
+  upstreamWs.on('unexpected-response', (_request, response) => {
     handleUnexpectedResponse(pathname, response);
   });
 
@@ -795,7 +982,9 @@ function setupAdvancedDebugListeners(upstreamWs, pathname) {
  * @param {http.IncomingMessage} response - The HTTP response
  */
 function handleUnexpectedResponse(pathname, response) {
-  const upstreamUrl = UPSTREAM_URL + pathname;
+  const upstream = connections.upstreams.get(pathname);
+  const upstreamUrl =
+    upstream?.upstreamUrl?.href || `${UPSTREAM_URL}${pathname}`;
   const statusInfo = {
     code: response.statusCode,
     message: response.statusMessage,
@@ -861,7 +1050,7 @@ function prepareUpstreamHeaders(headers) {
  * @param {WebSocket} ws - The client WebSocket connection
  * @param {http.IncomingMessage} req - The HTTP request
  */
-function setupClientConnection(ws, req) {
+async function setupClientConnection(ws, req) {
   const ip = req.socket.remoteAddress;
   const pathname = new URL(req.url, UPSTREAM_URL).pathname;
 
@@ -872,7 +1061,7 @@ function setupClientConnection(ws, req) {
   connections.messageQueues.set(pathname, []);
 
   // Connect to upstream
-  const upstreamUrl = UPSTREAM_URL + pathname;
+  const upstreamUrl = await resolveUpstreamUrl(pathname);
   const protocol_string = req.headers['sec-websocket-protocol'] || '';
   const protocols = protocol_string
     .split(/,\s*/)
@@ -882,10 +1071,12 @@ function setupClientConnection(ws, req) {
     headers: prepareUpstreamHeaders(req.headers),
   };
   logger.info(
-    `Connecting to upstream: ${upstreamUrl} using protocols: ${protocols} and options: ${JSON.stringify(options)}`
+    `Connecting to upstream: ${
+      upstreamUrl.href
+    } using protocols: ${protocols} and options: ${JSON.stringify(options)}`
   );
   const upstreamWs = new WebSocket(
-    upstreamUrl,
+    upstreamUrl.href,
     protocols.length > 0 ? protocols : undefined,
     options
   );
@@ -895,12 +1086,14 @@ function setupClientConnection(ws, req) {
     ws,
     upstreamId: pathname,
     connected: false,
+    upstreamUrl,
   });
 
   connections.upstreams.set(pathname, {
     ws: upstreamWs,
     clientId: pathname,
     connected: false,
+    upstreamUrl,
   });
 
   notifyRootMasters('connection', 'client-connected', pathname, {
@@ -1005,7 +1198,14 @@ function main() {
   masterWss.on('connection', setupMasterConnection);
 
   // Handle new WebSocket connections
-  wss.on('connection', setupClientConnection);
+  wss.on('connection', async (ws, req) => {
+    try {
+      await setupClientConnection(ws, req);
+    } catch (error) {
+      logger.error('Error setting up client connection:', error);
+      ws.close(1011, 'Server error during connection setup');
+    }
+  });
 
   setupProcessEventHandlers();
 
