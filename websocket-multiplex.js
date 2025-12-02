@@ -1057,6 +1057,34 @@ async function setupClientConnection(ws, req) {
   logger.info(`Client connected: ${pathname} from ${ip}`);
   logger.info('Client connection headers:', req.headers);
 
+  // Check if there's already a client connected on this path
+  const existingClient = connections.clients.get(pathname);
+  if (existingClient) {
+    logger.warn(
+      `Client already connected on path ${pathname}. Closing existing connection.`
+    );
+    // Get the existing upstream before removing from map
+    const existingUpstream = connections.upstreams.get(pathname);
+    
+    // Remove from connections map first to prevent close handler from interfering
+    connections.clients.delete(pathname);
+    connections.upstreams.delete(pathname);
+    connections.messageQueues.delete(pathname);
+    
+    // Close the existing upstream connection
+    if (existingUpstream && existingUpstream.ws.readyState === WebSocket.OPEN) {
+      existingUpstream.ws.close(1000, 'Client connection replaced');
+    }
+    
+    // Close the existing client connection (this will trigger close handler, but entry is already removed)
+    if (existingClient.ws.readyState === WebSocket.OPEN) {
+      existingClient.ws.close(
+        1000,
+        'Connection replaced by new client on same path'
+      );
+    }
+  }
+
   // Initialize message queue for this connection
   connections.messageQueues.set(pathname, []);
 
