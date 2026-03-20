@@ -1,0 +1,4 @@
+[2, "xxxxxxxx-xxxx-1xxx-yxxx-xxxxxxxxxxxx", "ChangeAvailability", {
+  "evse": {"id": 2},
+  "operationalStatus": "Operative"
+}]

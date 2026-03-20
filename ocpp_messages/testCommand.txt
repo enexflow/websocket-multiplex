@@ -1,0 +1,1 @@
+MASTER_URL=ws://localhost:8281 node test-ws-injection.js client:/ZETRAOFFICE:./ocpp_messages/2.0/ChangeAvailabilityRequest.json
