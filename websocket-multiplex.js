@@ -8,6 +8,10 @@ const MASTER_PORT = process.env.MASTER_PORT || 8081;
 const UPSTREAM_URL = process.env.UPSTREAM_URL || 'ws://localhost:9000';
 const DYNAMIC_UPSTREAM_CONFIG_URL = process.env.DYNAMIC_UPSTREAM_CONFIG_URL;
 const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
+const DYNAMIC_UPSTREAM_MAX_ATTEMPTS =
+  Number(process.env.DYNAMIC_UPSTREAM_MAX_ATTEMPTS) || 4;
+const DYNAMIC_UPSTREAM_RETRY_DELAY_MS =
+  Number(process.env.DYNAMIC_UPSTREAM_RETRY_DELAY_MS) || 30000; // 30 seconds default
 const MESSAGE_QUEUE_TIMEOUT =
   Number(process.env.MESSAGE_QUEUE_TIMEOUT) || 30000; // 30 seconds default
 
@@ -75,47 +79,67 @@ async function resolveUpstreamUrl(pathname) {
     return defaultUrl;
   }
 
-  try {
-    const configUrl = DYNAMIC_UPSTREAM_CONFIG_URL + pathname;
-    logger.debug(`Requesting dynamic upstream config from: ${configUrl}`);
+  const configUrl = DYNAMIC_UPSTREAM_CONFIG_URL + pathname;
+  const maxAttempts = DYNAMIC_UPSTREAM_MAX_ATTEMPTS;
+  const retryDelayMs = DYNAMIC_UPSTREAM_RETRY_DELAY_MS;
 
-    const response = await fetch(configUrl, {
-      method: 'GET',
-      signal: AbortSignal.timeout(5000), // 5 second timeout
-    });
-
-    if (!response.ok)
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-
-    const upstreamUrlString = (await response.text()).trim();
-
-    // Validate that the response is a valid URL
-    let upstreamUrl;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      upstreamUrl = new URL(upstreamUrlString);
-    } catch (urlError) {
-      throw new Error(
-        `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`
+      logger.debug(
+        `Requesting dynamic upstream config from: ${configUrl} (attempt ${attempt}/${maxAttempts})`
       );
-    }
 
-    // Validate that it's a WebSocket URL
-    if (upstreamUrl.protocol !== 'ws:' && upstreamUrl.protocol !== 'wss:') {
-      throw new Error(
-        `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`
+      const response = await fetch(configUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000), // 5 second timeout
+      });
+
+      if (!response.ok)
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+      const upstreamUrlString = (await response.text()).trim();
+
+      // Validate that the response is a valid URL
+      let upstreamUrl;
+      try {
+        upstreamUrl = new URL(upstreamUrlString);
+      } catch (urlError) {
+        throw new Error(
+          `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`
+        );
+      }
+
+      // Validate that it's a WebSocket URL
+      if (upstreamUrl.protocol !== 'ws:' && upstreamUrl.protocol !== 'wss:') {
+        throw new Error(
+          `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`
+        );
+      }
+
+      logger.info(
+        `Dynamic upstream resolved for ${pathname}: ${upstreamUrl.href}`
       );
-    }
+      return upstreamUrl;
+    } catch (error) {
+      const isLastAttempt = attempt === maxAttempts;
+      logger.warn(
+        `Dynamic upstream resolution failed for ${pathname} on attempt ${attempt}/${maxAttempts}: ${error.message}${
+          isLastAttempt
+            ? `. Using default: ${defaultUrl.href}`
+            : `. Retrying in ${retryDelayMs / 1000}s`
+        }`
+      );
 
-    logger.info(
-      `Dynamic upstream resolved for ${pathname}: ${upstreamUrl.href}`
-    );
-    return upstreamUrl;
-  } catch (error) {
-    logger.warn(
-      `Dynamic upstream resolution failed for ${pathname}: ${error.message}. Using default: ${defaultUrl.href}`
-    );
-    return defaultUrl;
+      if (isLastAttempt) {
+        return defaultUrl;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
   }
+
+  // Fallback safeguard (should not be reached)
+  return defaultUrl;
 }
 
 /**
@@ -1056,6 +1080,34 @@ async function setupClientConnection(ws, req) {
 
   logger.info(`Client connected: ${pathname} from ${ip}`);
   logger.info('Client connection headers:', req.headers);
+
+  // Check if there's already a client connected on this path
+  const existingClient = connections.clients.get(pathname);
+  if (existingClient) {
+    logger.warn(
+      `Client already connected on path ${pathname}. Closing existing connection.`
+    );
+    // Get the existing upstream before removing from map
+    const existingUpstream = connections.upstreams.get(pathname);
+    
+    // Remove from connections map first to prevent close handler from interfering
+    connections.clients.delete(pathname);
+    connections.upstreams.delete(pathname);
+    connections.messageQueues.delete(pathname);
+    
+    // Close the existing upstream connection
+    if (existingUpstream && existingUpstream.ws.readyState === WebSocket.OPEN) {
+      existingUpstream.ws.close(1000, 'Client connection replaced');
+    }
+    
+    // Close the existing client connection (this will trigger close handler, but entry is already removed)
+    if (existingClient.ws.readyState === WebSocket.OPEN) {
+      existingClient.ws.close(
+        1000,
+        'Connection replaced by new client on same path'
+      );
+    }
+  }
 
   // Initialize message queue for this connection
   connections.messageQueues.set(pathname, []);

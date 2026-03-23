@@ -5,7 +5,7 @@
   "main": "websocket-multiplex.js",
   "scripts": {
     "start": "node websocket-multiplex.js",
-    "test": "node test-websocket-multiplexer.js",
+    "test": "DYNAMIC_UPSTREAM_MAX_ATTEMPTS=1 DYNAMIC_UPSTREAM_RETRY_DELAY_MS=0 node test-websocket-multiplexer.js",
     "type-check": "tsc --noEmit",
     "build": "tsc --noEmit",
     "lint": "node ./node_modules/@biomejs/biome/bin/biome check .",
