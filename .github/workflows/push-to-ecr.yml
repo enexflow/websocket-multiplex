@@ -2,7 +2,7 @@ name: Push docker images
 
 on:
   push:
-    branches: [ staging, prod, test-push-img]
+    branches: [ staging, prod, demo, test-push-img]
 
 jobs:
   push-to-ecr:
