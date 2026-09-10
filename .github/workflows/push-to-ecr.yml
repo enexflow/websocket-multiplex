@@ -1,8 +1,12 @@
 name: Push docker images
 
 on:
+  # Permet de (re)construire une image a la demande. Indispensable : creer une branche
+  # sur un commit deja existant ne declenche AUCUN workflow (push sans commit), donc
+  # l'amorcage d'un nouvel env passe forcement par un declenchement manuel.
+  workflow_dispatch:
   push:
-    branches: [ staging, prod, demo, test-push-img]
+    branches: [ dev, staging, prod, demo]
 
 jobs:
   push-to-ecr:
