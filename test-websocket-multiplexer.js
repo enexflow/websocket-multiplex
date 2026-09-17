@@ -3,6 +3,7 @@ const http = require('node:http');
 const { spawn, exec } = require('node:child_process');
 const assert = require('node:assert');
 const { SIGINT } = require('node:constants');
+const { TestServer } = require('./test/upstream-mock-server');
 
 // Configuration
 const CONFIG = {
@@ -96,89 +97,6 @@ const testResults = {
   masterConnectionEvents: [],
   allTestsPassed: false,
 };
-
-// Test server implementation
-class TestServer {
-  constructor(port) {
-    this.port = port;
-    this.server = http.createServer();
-    this.wss = new WebSocket.Server({ server: this.server });
-    this.messageQueue = [];
-    /** @type {Map<string, WebSocket>} */
-    this.connections = new Map();
-    /** @type {http.IncomingHttpHeaders} */
-    this.lastRequestHeaders = {};
-
-    this.wss.on('connection', (ws, req) => {
-      console.log(
-        `[TEST SERVER] Client connected on path: ${
-          req.url
-        } with headers: ${JSON.stringify(req.headers)}`
-      );
-      this.connections.set(req.url, ws);
-      this.lastRequestHeaders = req.headers;
-
-      ws.on('message', (message) => {
-        const messageStr = message.toString();
-        this.messageQueue.push(messageStr);
-      });
-
-      ws.on('close', () => {
-        this.connections.delete(req.url);
-      });
-    });
-  }
-
-  send(message, path = null) {
-    if (path) {
-      const client = this.connections.get(path);
-      if (client && client.readyState === WebSocket.OPEN) {
-        client.send(message);
-      }
-    } else {
-      for (const client of this.wss.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(message);
-        }
-      }
-    }
-  }
-
-  async receiveMessage(timeoutMs = 1000) {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-      console.debug(
-        `[TEST SERVER] Receiving message from port ${this.port}`,
-        this.messageQueue
-      );
-      if (this.messageQueue.length > 0) {
-        return this.messageQueue.shift();
-      }
-      await wait(50);
-    }
-    throw new Error(`Timeout waiting for message on port ${this.port}`);
-  }
-
-  start() {
-    return new Promise((resolve) => {
-      this.server.listen(this.port, () => {
-        console.log(
-          `[TEST SERVER] WebSocket test server running on port ${this.port}`
-        );
-        resolve();
-      });
-    });
-  }
-
-  stop() {
-    for (const client of this.wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.close();
-      }
-    }
-    this.server.close();
-  }
-}
 
 // Multiplexer process manager
 class MultiplexerProcess {
