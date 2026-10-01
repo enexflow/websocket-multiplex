@@ -1,14 +1,15 @@
 const WebSocket = require('ws');
 const http = require('node:http');
-const { spawn, exec } = require('node:child_process');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
 const assert = require('node:assert');
 const { SIGINT } = require('node:constants');
 
-// Configuration
+// Dedicated ports: 8080/8081/9000 are commonly taken by local dev stacks (Docker, Keycloak, Hasura...).
 const CONFIG = {
-  TEST_PORT: 9000,
-  PROXY_PORT: 8080,
-  MASTER_PORT: 8081,
+  TEST_PORT: 19000,
+  PROXY_PORT: 18080,
+  MASTER_PORT: 18081,
   TEST_PATH: '/test-connection',
   TIMEOUT_MS: 5000,
 };
@@ -17,32 +18,15 @@ const CONFIG = {
 /** @type {TestRunner} */
 let globalTestRunner = null;
 
-// Function to kill processes using specific ports
-function killProcessOnPort(port) {
-  return new Promise((resolve) => {
-    exec(`lsof -i :${port} -t`, (error, stdout) => {
-      if (error || !stdout.trim()) {
-        // No process found on this port or error occurred
-        resolve();
-        return;
-      }
-
-      const pids = stdout.trim().split('\n');
-      console.log(`Found processes using port ${port}: ${pids.join(', ')}`);
-
-      // Kill each process
-      for (const pid of pids) {
-        try {
-          process.kill(Number.parseInt(pid, 10), 'SIGKILL');
-          console.log(`Killed process ${pid} on port ${port}`);
-        } catch (err) {
-          console.error(`Failed to kill process ${pid}:`, err.message);
-        }
-      }
-
-      // Give some time for the ports to be released
-      setTimeout(resolve, 500);
-    });
+// Fail fast on a busy port: killing its holder took down Docker Desktop on a dev machine.
+function ensurePortFree(port) {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', (error) =>
+      reject(new Error(`Test port ${port} is not available: ${error.message}`))
+    );
+    probe.once('listening', () => probe.close(() => resolve()));
+    probe.listen(port);
   });
 }
 
@@ -82,6 +66,15 @@ function randomMessage(prefix) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, timeoutMs, label) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (predicate()) return;
+    await wait(50);
+  }
+  throw new Error(`Timeout waiting for ${label}`);
 }
 
 // Test results tracking
@@ -490,11 +483,10 @@ class TestRunner {
   }
 
   async setup() {
-    // Kill any existing processes on the ports we'll use
     await Promise.all([
-      killProcessOnPort(this.config.TEST_PORT),
-      killProcessOnPort(this.config.PROXY_PORT),
-      killProcessOnPort(this.config.MASTER_PORT),
+      ensurePortFree(this.config.TEST_PORT),
+      ensurePortFree(this.config.PROXY_PORT),
+      ensurePortFree(this.config.MASTER_PORT),
     ]);
 
     await this.upstream.start();
@@ -522,8 +514,14 @@ class TestRunner {
       `ws://localhost:${this.config.MASTER_PORT}/upstream${this.config.TEST_PATH}`
     );
 
+    // The initial master status must list the client: register it before the masters connect.
+    await client.connect();
+    await waitFor(
+      () => this.upstream.connections.has(this.config.TEST_PATH),
+      2000,
+      'the upstream session of the test client'
+    );
     await Promise.all([
-      client.connect(),
       masterControl.connect(),
       masterClientMonitor.connect(),
       masterUpstreamMonitor.connect(),
@@ -682,6 +680,9 @@ class TestRunner {
     // Test 9: Dynamic upstream configuration
     await this.testDynamicUpstream();
 
+    // Test 10: Replaced or superseded connections never leave a ghost upstream
+    await this.testConnectionReplacementRaces();
+
     // Cleanup
     masterControl.close();
     masterClientMonitor.close();
@@ -718,7 +719,7 @@ class TestRunner {
         : res.writeHead(404, headers).end('Not found');
     });
 
-    const CONFIG_PORT = 9999;
+    const CONFIG_PORT = this.config.TEST_PORT + 999;
     const DYNAMIC_MULTIPLEXER_PORT = this.config.PROXY_PORT + 10;
 
     await withTimeout(
@@ -733,6 +734,7 @@ class TestRunner {
     const dynamicEnv = {
       ...process.env,
       PORT: DYNAMIC_MULTIPLEXER_PORT.toString(),
+      MASTER_PORT: (this.config.MASTER_PORT + 10).toString(),
       UPSTREAM_URL: `ws://localhost:${this.config.TEST_PORT}`, // Default fallback
       DYNAMIC_UPSTREAM_CONFIG_URL: `http://localhost:${CONFIG_PORT}`,
       LOG_LEVEL: 'DEBUG',
@@ -924,6 +926,172 @@ class TestRunner {
       }
       configServer.close();
       dynamicUpstream.stop();
+      await wait(500);
+    }
+  }
+
+  async testConnectionReplacementRaces() {
+    console.log('Test: Connection replacement races leave no ghost upstream');
+
+    const RACE_UPSTREAM_PORT = this.config.TEST_PORT + 200;
+    const RACE_CONFIG_PORT = this.config.TEST_PORT + 201;
+    const RACE_PROXY_PORT = this.config.PROXY_PORT + 20;
+    const RACE_MASTER_PORT = this.config.MASTER_PORT + 20;
+    const SLOW_RESOLUTION_MS = 600;
+
+    const raceUpstream = new TestServer(RACE_UPSTREAM_PORT);
+    /** @type {Map<WebSocket, { path: string, socket: net.Socket }>} */
+    const upstreamSessions = new Map();
+    raceUpstream.wss.on('connection', (ws, req) => {
+      upstreamSessions.set(ws, { path: req.url, socket: req.socket });
+    });
+    await raceUpstream.start();
+    const everOpenedOn = (path) =>
+      [...upstreamSessions.values()].filter((s) => s.path === path).length;
+    const liveSessionsOn = (path) =>
+      [...upstreamSessions.entries()]
+        .filter(
+          ([ws, s]) => s.path === path && ws.readyState !== WebSocket.CLOSED
+        )
+        .map(([ws]) => ws);
+    const openSessionsOn = (path) =>
+      liveSessionsOn(path).filter((ws) => ws.readyState === WebSocket.OPEN)
+        .length;
+
+    // Paths starting with /slow- resolve late, opening the window the races need.
+    const configServer = http.createServer((req, res) => {
+      const delay = req.url.startsWith('/slow-') ? SLOW_RESOLUTION_MS : 0;
+      setTimeout(
+        () =>
+          res
+            .writeHead(200, { 'Content-Type': 'text/plain' })
+            .end(`ws://localhost:${RACE_UPSTREAM_PORT}${req.url}`),
+        delay
+      );
+    });
+    await new Promise((resolve) =>
+      configServer.listen(RACE_CONFIG_PORT, () => resolve())
+    );
+
+    const raceMultiplexer = spawn('node', ['websocket-multiplex.js'], {
+      env: {
+        ...process.env,
+        PORT: RACE_PROXY_PORT.toString(),
+        MASTER_PORT: RACE_MASTER_PORT.toString(),
+        UPSTREAM_URL: `ws://localhost:${RACE_UPSTREAM_PORT}`,
+        DYNAMIC_UPSTREAM_CONFIG_URL: `http://localhost:${RACE_CONFIG_PORT}`,
+        LOG_LEVEL: 'DEBUG',
+      },
+    });
+    raceMultiplexer.stdout.on('data', (data) => {
+      console.log(`[RACE MULTIPLEXER] ${data.toString().trim()}`);
+    });
+    raceMultiplexer.stderr.on('data', (data) => {
+      console.error(`[RACE MULTIPLEXER ERROR] ${data.toString().trim()}`);
+    });
+    await withTimeout(
+      new Promise((resolve) => {
+        raceMultiplexer.stdout.on('data', (data) => {
+          if (data.toString().includes('multiplexer running')) resolve();
+        });
+      }),
+      5000,
+      'Race multiplexer startup timed out'
+    );
+    const proxyUrl = (path) => `ws://localhost:${RACE_PROXY_PORT}${path}`;
+
+    try {
+      // Race 1: the replaced upstream finishes closing only after its successor registered (CSMS round trip).
+      const replacedPath = '/replaced';
+      const first = new WebSocketClient(proxyUrl(replacedPath));
+      await first.connect();
+      await waitFor(
+        () => openSessionsOn(replacedPath) === 1,
+        2000,
+        'the first upstream session'
+      );
+      const oldSession = liveSessionsOn(replacedPath)[0];
+      upstreamSessions.get(oldSession).socket.pause();
+
+      const second = new WebSocketClient(proxyUrl(replacedPath));
+      await second.connect();
+      await waitFor(
+        () => liveSessionsOn(replacedPath).length === 2,
+        2000,
+        'the replacement upstream session'
+      );
+      upstreamSessions.get(oldSession).socket.resume();
+      await waitFor(
+        () => oldSession.readyState === WebSocket.CLOSED,
+        2000,
+        'the replaced upstream session to close'
+      );
+      await wait(300);
+
+      assert.equal(
+        second.ws.readyState,
+        WebSocket.OPEN,
+        'The late close of the replaced upstream must not close the new client'
+      );
+      const replacedMsg = randomMessage('after-replacement');
+      await second.send(replacedMsg);
+      assert.equal(await raceUpstream.receiveMessage(2000), replacedMsg);
+      second.close();
+      await waitFor(
+        () => openSessionsOn(replacedPath) === 0,
+        2000,
+        'no upstream left open after the client left'
+      );
+      console.log(
+        '✓ Late close of a replaced upstream keeps the new connection and leaves no ghost'
+      );
+
+      // Race 2: the client leaves while its upstream is being resolved.
+      const leftPath = '/slow-left';
+      const leaver = new WebSocketClient(proxyUrl(leftPath));
+      await leaver.connect();
+      leaver.close();
+      await wait(SLOW_RESOLUTION_MS + 700);
+      assert.equal(
+        everOpenedOn(leftPath),
+        0,
+        'No upstream may be opened for a client that already left'
+      );
+      console.log(
+        '✓ No upstream opened for a client that left during resolution'
+      );
+
+      // Race 3: a second connection arrives while the first one is still being resolved.
+      const concurrentPath = '/slow-concurrent';
+      const older = new WebSocketClient(proxyUrl(concurrentPath));
+      await older.connect();
+      await wait(100);
+      const newer = new WebSocketClient(proxyUrl(concurrentPath));
+      await newer.connect();
+      await wait(SLOW_RESOLUTION_MS + 700);
+      assert.equal(
+        openSessionsOn(concurrentPath),
+        1,
+        'Only the newest connection may keep an upstream session'
+      );
+      assert.equal(newer.ws.readyState, WebSocket.OPEN);
+      assert.notEqual(older.ws.readyState, WebSocket.OPEN);
+      const concurrentMsg = randomMessage('newest-wins');
+      await newer.send(concurrentMsg);
+      assert.equal(await raceUpstream.receiveMessage(2000), concurrentMsg);
+      newer.close();
+      await waitFor(
+        () => openSessionsOn(concurrentPath) === 0,
+        2000,
+        'no upstream left open after the newest client left'
+      );
+      console.log(
+        '✓ Concurrent connections on one path keep a single upstream'
+      );
+    } finally {
+      raceMultiplexer.kill('SIGKILL');
+      configServer.close();
+      raceUpstream.stop();
       await wait(500);
     }
   }
