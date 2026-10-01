@@ -164,6 +164,10 @@ const connections = {
   messageQueues: new Map(),
 };
 
+// Latest setup per path: a setup resuming after its upstream resolution must not overwrite a newer one.
+/** @type {Map<string, number>} */
+const setupGenerations = new Map();
+
 /**
  * Initializes WebSocket servers and enables internal logging if needed
  * @returns {{ wss: WebSocket.Server, masterWss: WebSocket.Server }} Object containing the WebSocket servers
@@ -544,6 +548,15 @@ function notifyMasterAboutDequeuedMessage(connectionId, queuedMessage) {
  * @param {string} pathname - The connection identifier
  */
 function handleUpstreamOpen(upstreamWs, pathname) {
+  // An upstream no longer registered for its path would stay open with nobody to close it.
+  if (connections.upstreams.get(pathname)?.ws !== upstreamWs) {
+    logger.warn(
+      `Upstream for ${pathname} opened after being replaced, closing it`
+    );
+    upstreamWs.close(1000, 'Client connection replaced');
+    return;
+  }
+
   logger.info(`Upstream connected for client ${pathname}`);
   const client = connections.clients.get(pathname);
   const upstream = connections.upstreams.get(pathname);
@@ -747,15 +760,23 @@ function notifyMasterAboutMessage(direction, connectionId, message) {
 /**
  * Handles client disconnection
  * @param {string} pathname - The connection identifier
+ * @param {WebSocket} ws - The client WebSocket that closed
  * @param {number} code - The close code
  * @param {string} reason - The close reason
  */
-function handleClientDisconnection(pathname, code, reason) {
+function handleClientDisconnection(pathname, ws, code, reason) {
   logger.info(
     `Client disconnected: ${pathname}. Code: ${code}, Reason: ${
       reason || 'No reason provided'
     }`
   );
+
+  // A replaced client closes after its successor registered on the same path: leave the successor alone.
+  const current = connections.clients.get(pathname);
+  if (current && current.ws !== ws) {
+    logger.debug(`Ignoring close of a replaced client socket for ${pathname}`);
+    return;
+  }
 
   connections.messageQueues.delete(pathname);
 
@@ -777,10 +798,11 @@ function handleClientDisconnection(pathname, code, reason) {
 /**
  * Handles upstream disconnection
  * @param {string} pathname - The connection identifier
+ * @param {WebSocket} upstreamWs - The upstream WebSocket that closed
  * @param {number} code - The close code
  * @param {string} reason - The close reason
  */
-function handleUpstreamDisconnection(pathname, code, reason) {
+function handleUpstreamDisconnection(pathname, upstreamWs, code, reason) {
   const closeInfo = {
     code,
     reason: reason?.toString() || 'No reason provided',
@@ -788,9 +810,15 @@ function handleUpstreamDisconnection(pathname, code, reason) {
   };
 
   logger.info(`Upstream disconnected for client ${pathname}:`, closeInfo);
+  logImportantCloseCodes(pathname, code);
+
+  // A replaced upstream (e.g. closed by the CSMS in favour of a newer session) must not tear down the current client.
+  if (connections.upstreams.get(pathname)?.ws !== upstreamWs) {
+    logger.debug(`Ignoring close of a stale upstream socket for ${pathname}`);
+    return;
+  }
 
   connections.messageQueues.delete(pathname);
-  logImportantCloseCodes(pathname, code);
 
   if (pathname === '/') {
     notifyRootMasters(
@@ -1081,6 +1109,9 @@ async function setupClientConnection(ws, req) {
   logger.info(`Client connected: ${pathname} from ${ip}`);
   logger.info('Client connection headers:', req.headers);
 
+  const generation = (setupGenerations.get(pathname) || 0) + 1;
+  setupGenerations.set(pathname, generation);
+
   // Check if there's already a client connected on this path
   const existingClient = connections.clients.get(pathname);
   if (existingClient) {
@@ -1089,18 +1120,22 @@ async function setupClientConnection(ws, req) {
     );
     // Get the existing upstream before removing from map
     const existingUpstream = connections.upstreams.get(pathname);
-    
-    // Remove from connections map first to prevent close handler from interfering
+
+    // Their close handlers fire later and ignore sockets that are no longer registered.
     connections.clients.delete(pathname);
     connections.upstreams.delete(pathname);
     connections.messageQueues.delete(pathname);
-    
-    // Close the existing upstream connection
-    if (existingUpstream && existingUpstream.ws.readyState === WebSocket.OPEN) {
+
+    // Close the existing upstream connection, including one still connecting
+    if (
+      existingUpstream &&
+      (existingUpstream.ws.readyState === WebSocket.OPEN ||
+        existingUpstream.ws.readyState === WebSocket.CONNECTING)
+    ) {
       existingUpstream.ws.close(1000, 'Client connection replaced');
     }
-    
-    // Close the existing client connection (this will trigger close handler, but entry is already removed)
+
+    // Close the existing client connection
     if (existingClient.ws.readyState === WebSocket.OPEN) {
       existingClient.ws.close(
         1000,
@@ -1114,6 +1149,25 @@ async function setupClientConnection(ws, req) {
 
   // Connect to upstream
   const upstreamUrl = await resolveUpstreamUrl(pathname);
+
+  // A newer connection may have taken this path, or this client may have left, while the upstream was resolved.
+  if (setupGenerations.get(pathname) !== generation) {
+    logger.warn(
+      `Connection on ${pathname} superseded during upstream resolution, closing it`
+    );
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, 'Connection replaced by new client on same path');
+    }
+    return;
+  }
+  if (ws.readyState !== WebSocket.OPEN) {
+    logger.info(
+      `Client ${pathname} left during upstream resolution, not connecting upstream`
+    );
+    connections.messageQueues.delete(pathname);
+    return;
+  }
+
   const protocol_string = req.headers['sec-websocket-protocol'] || '';
   const protocols = protocol_string
     .split(/,\s*/)
@@ -1168,12 +1222,12 @@ async function setupClientConnection(ws, req) {
 
   // Handle client disconnection
   ws.on('close', (code, reason) =>
-    handleClientDisconnection(pathname, code, reason?.toString())
+    handleClientDisconnection(pathname, ws, code, reason?.toString())
   );
 
   // Handle upstream disconnection
   upstreamWs.on('close', (code, reason) =>
-    handleUpstreamDisconnection(pathname, code, reason?.toString())
+    handleUpstreamDisconnection(pathname, upstreamWs, code, reason?.toString())
   );
 
   // Handle errors
