@@ -1,14 +1,15 @@
 const WebSocket = require('ws');
 const http = require('node:http');
-const { spawn, exec } = require('node:child_process');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
 const assert = require('node:assert');
 const { SIGINT } = require('node:constants');
 
-// Configuration
+// Dedicated ports: 8080/8081/9000 are commonly taken by local dev stacks (Docker, Keycloak, Hasura...).
 const CONFIG = {
-  TEST_PORT: 9000,
-  PROXY_PORT: 8080,
-  MASTER_PORT: 8081,
+  TEST_PORT: 19000,
+  PROXY_PORT: 18080,
+  MASTER_PORT: 18081,
   TEST_PATH: '/test-connection',
   TIMEOUT_MS: 5000,
 };
@@ -17,32 +18,15 @@ const CONFIG = {
 /** @type {TestRunner} */
 let globalTestRunner = null;
 
-// Function to kill processes using specific ports
-function killProcessOnPort(port) {
-  return new Promise((resolve) => {
-    exec(`lsof -i :${port} -t`, (error, stdout) => {
-      if (error || !stdout.trim()) {
-        // No process found on this port or error occurred
-        resolve();
-        return;
-      }
-
-      const pids = stdout.trim().split('\n');
-      console.log(`Found processes using port ${port}: ${pids.join(', ')}`);
-
-      // Kill each process
-      for (const pid of pids) {
-        try {
-          process.kill(Number.parseInt(pid, 10), 'SIGKILL');
-          console.log(`Killed process ${pid} on port ${port}`);
-        } catch (err) {
-          console.error(`Failed to kill process ${pid}:`, err.message);
-        }
-      }
-
-      // Give some time for the ports to be released
-      setTimeout(resolve, 500);
-    });
+// Fail fast on a busy port: killing its holder took down Docker Desktop on a dev machine.
+function ensurePortFree(port) {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', (error) =>
+      reject(new Error(`Test port ${port} is not available: ${error.message}`))
+    );
+    probe.once('listening', () => probe.close(() => resolve()));
+    probe.listen(port);
   });
 }
 
@@ -82,6 +66,15 @@ function randomMessage(prefix) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, timeoutMs, label) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (predicate()) return;
+    await wait(50);
+  }
+  throw new Error(`Timeout waiting for ${label}`);
 }
 
 // Test results tracking
@@ -490,11 +483,10 @@ class TestRunner {
   }
 
   async setup() {
-    // Kill any existing processes on the ports we'll use
     await Promise.all([
-      killProcessOnPort(this.config.TEST_PORT),
-      killProcessOnPort(this.config.PROXY_PORT),
-      killProcessOnPort(this.config.MASTER_PORT),
+      ensurePortFree(this.config.TEST_PORT),
+      ensurePortFree(this.config.PROXY_PORT),
+      ensurePortFree(this.config.MASTER_PORT),
     ]);
 
     await this.upstream.start();
@@ -522,8 +514,14 @@ class TestRunner {
       `ws://localhost:${this.config.MASTER_PORT}/upstream${this.config.TEST_PATH}`
     );
 
+    // The initial master status must list the client: register it before the masters connect.
+    await client.connect();
+    await waitFor(
+      () => this.upstream.connections.has(this.config.TEST_PATH),
+      2000,
+      'the upstream session of the test client'
+    );
     await Promise.all([
-      client.connect(),
       masterControl.connect(),
       masterClientMonitor.connect(),
       masterUpstreamMonitor.connect(),
@@ -718,7 +716,7 @@ class TestRunner {
         : res.writeHead(404, headers).end('Not found');
     });
 
-    const CONFIG_PORT = 9999;
+    const CONFIG_PORT = this.config.TEST_PORT + 999;
     const DYNAMIC_MULTIPLEXER_PORT = this.config.PROXY_PORT + 10;
 
     await withTimeout(
@@ -733,6 +731,7 @@ class TestRunner {
     const dynamicEnv = {
       ...process.env,
       PORT: DYNAMIC_MULTIPLEXER_PORT.toString(),
+      MASTER_PORT: (this.config.MASTER_PORT + 10).toString(),
       UPSTREAM_URL: `ws://localhost:${this.config.TEST_PORT}`, // Default fallback
       DYNAMIC_UPSTREAM_CONFIG_URL: `http://localhost:${CONFIG_PORT}`,
       LOG_LEVEL: 'DEBUG',
