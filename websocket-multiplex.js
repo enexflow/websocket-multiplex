@@ -1276,10 +1276,16 @@ async function setupClientConnection(ws, req) {
 function shutdownServer() {
   logger.info('Shutting down server...');
 
-  // Close all connections
+  // Close all connections. Registry cleanup happens here, deterministically,
+  // rather than relying on each client's 'close' event: process.exit() below
+  // doesn't wait for those async close handshakes to finish, so under load
+  // only some of them would actually fire handleClientDisconnection in time
+  // (observed: Redis registry entries left stale for connections whose close
+  // event hadn't completed yet).
   logger.debug(`Closing ${connections.clients.size} client connections`);
   for (const client of connections.clients.values()) {
     logger.debug(`Closing client connection for ${client.upstreamId}`);
+    redisBridge.unregisterConnection(client.upstreamId);
     client.ws.close(1000, 'Server shutting down');
   }
 
