@@ -785,6 +785,9 @@ class TestRunner {
     // Test 11: Upstream refusals reach the station and never evict the connected one
     await this.testUpstreamRefusals();
 
+    // Test 12: The heartbeat frees the path of a silent station and keeps live ones
+    await this.testStationHeartbeat();
+
     // Cleanup
     masterControl.close();
     masterClientMonitor.close();
@@ -1230,10 +1233,12 @@ class TestRunner {
           sessionPath === path && ws.readyState === WebSocket.OPEN
       ).length;
 
-    // Plays the CSMS: unknown stations get a 404, wrong or missing credentials a 401.
+    // Plays the CSMS: unknown stations get a 404, forbidden ones a 403, wrong or missing credentials a 401.
     const authUpstream = new TestServer(AUTH_UPSTREAM_PORT, {
       verifyClient: (info, done) => {
         if (info.req.url.startsWith('/unknown')) return done(false, 404);
+        if (info.req.url.startsWith('/forbidden')) return done(false, 403);
+        if (info.req.url.startsWith('/unavailable')) return done(false, 503);
         // Stations without Basic auth (security profile 0): accepted, but a duplicate identity is refused.
         if (info.req.url.startsWith('/open')) {
           if (openSessionsOn(info.req.url) > 0) return done(false, 409);
@@ -1282,12 +1287,27 @@ class TestRunner {
         401,
         'A newcomer without credentials must get the upstream 401'
       );
+      // Every upstream 4xx reaches the station as 401: the status must not tell an unknown serial from a wrong password.
       assert.equal(
         await handshakeStatus(proxyUrl('/unknown-station'), {
           authorization: stationAuth,
         }),
-        404,
-        'An upstream 404 must reach the newcomer'
+        401,
+        'An upstream 404 must reach the newcomer as a 401'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl('/forbidden-station'), {
+          authorization: stationAuth,
+        }),
+        401,
+        'An upstream 403 must reach the newcomer as a 401'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl('/unavailable-station'), {
+          authorization: stationAuth,
+        }),
+        503,
+        'An upstream 5xx must reach the newcomer unchanged'
       );
 
       await wait(300);
@@ -1304,7 +1324,7 @@ class TestRunner {
       authUpstream.send(csmsMsg, stationPath);
       assert.equal(await station.receiveMessage(), csmsMsg);
       console.log(
-        '✓ Upstream 401/404 reach the newcomer and the connected station keeps working'
+        '✓ Upstream 401/403/404 reach the newcomer as 401, a 5xx unchanged, and the connected station keeps working'
       );
 
       // A station back from a network drop reconnects with the credentials it was accepted with.
@@ -1356,8 +1376,8 @@ class TestRunner {
       );
       assert.equal(
         await handshakeStatus(proxyUrl(anonymousPath)),
-        409,
-        'An anonymous newcomer must get the upstream duplicate refusal'
+        401,
+        'An anonymous newcomer must get the upstream duplicate refusal (409 upstream, 401 to the station)'
       );
       await wait(300);
       assert.equal(
@@ -1376,6 +1396,148 @@ class TestRunner {
     } finally {
       multiplexer.kill('SIGKILL');
       authUpstream.stop();
+      await wait(500);
+    }
+  }
+
+  async testStationHeartbeat() {
+    console.log(
+      'Test: The heartbeat terminates a silent station and keeps a live one'
+    );
+
+    const HEARTBEAT_UPSTREAM_PORT = this.config.TEST_PORT + 400;
+    const HEARTBEAT_PROXY_PORT = this.config.PROXY_PORT + 40;
+    const HEARTBEAT_MASTER_PORT = this.config.MASTER_PORT + 40;
+    const HEARTBEAT_INTERVAL_MS = 500;
+    // Stations without credentials: a newcomer never evicts them, so only the heartbeat frees a dead one's path.
+    const deadPath = '/CP-DEAD';
+    const livePath = '/CP-LIVE';
+
+    /** @type {Map<WebSocket, string>} */
+    const upstreamSessions = new Map();
+    const openSessionsOn = (path) =>
+      [...upstreamSessions.entries()].filter(
+        ([ws, sessionPath]) =>
+          sessionPath === path && ws.readyState === WebSocket.OPEN
+      ).length;
+
+    // Plays Citrine: an identity that still has an upstream session is refused as a duplicate.
+    const heartbeatUpstream = new TestServer(HEARTBEAT_UPSTREAM_PORT, {
+      verifyClient: (info, done) => {
+        if (openSessionsOn(info.req.url) > 0) return done(false, 401);
+        done(true);
+      },
+    });
+    heartbeatUpstream.wss.on('connection', (ws, req) => {
+      upstreamSessions.set(ws, req.url);
+    });
+    await heartbeatUpstream.start();
+
+    const multiplexer = await startMultiplexer('HEARTBEAT MULTIPLEXER', {
+      PORT: HEARTBEAT_PROXY_PORT.toString(),
+      MASTER_PORT: HEARTBEAT_MASTER_PORT.toString(),
+      UPSTREAM_URL: `ws://localhost:${HEARTBEAT_UPSTREAM_PORT}`,
+      STATION_HEARTBEAT_INTERVAL_MS: HEARTBEAT_INTERVAL_MS.toString(),
+      LOG_LEVEL: 'DEBUG',
+    });
+    const proxyUrl = (path) => `ws://localhost:${HEARTBEAT_PROXY_PORT}${path}`;
+    const master = new WebSocketClient(
+      `ws://localhost:${HEARTBEAT_MASTER_PORT}/`
+    );
+
+    try {
+      await master.connect();
+
+      const live = new WebSocketClient(proxyUrl(livePath));
+      await live.connect();
+      let livePings = 0;
+      live.ws.on('ping', () => {
+        livePings++;
+      });
+
+      // autoPong off: the station receives the pings but never answers, like the far end of a half-open socket.
+      const dead = new WebSocket(proxyUrl(deadPath), { autoPong: false });
+      let deadClosedAt = 0;
+      dead.on('close', () => {
+        deadClosedAt = Date.now();
+      });
+      await withTimeout(
+        new Promise((resolve, reject) => {
+          dead.once('open', resolve);
+          dead.once('error', reject);
+        }),
+        3000,
+        'The silent station could not connect'
+      );
+      const deadOpenedAt = Date.now();
+      await waitFor(
+        () => openSessionsOn(deadPath) === 1 && openSessionsOn(livePath) === 1,
+        2000,
+        'both upstream sessions'
+      );
+
+      await waitFor(
+        () => deadClosedAt > 0,
+        3 * HEARTBEAT_INTERVAL_MS + 2000,
+        'the silent station to be terminated'
+      );
+      const elapsed = deadClosedAt - deadOpenedAt;
+      assert(
+        elapsed >= 0.8 * HEARTBEAT_INTERVAL_MS,
+        `A station must get a whole interval to answer the ping (terminated after ${elapsed}ms)`
+      );
+      assert(
+        elapsed <= 2 * HEARTBEAT_INTERVAL_MS + 1000,
+        `A silent station must be terminated within about two intervals (took ${elapsed}ms)`
+      );
+      await waitFor(
+        () => openSessionsOn(deadPath) === 0,
+        2000,
+        'the upstream session of the terminated station to close'
+      );
+      await waitFor(
+        () =>
+          master.messageQueue.some((raw) => {
+            const event = JSON.parse(raw);
+            return (
+              event.event === 'client-disconnected' &&
+              event.connectionId === deadPath
+            );
+          }),
+        2000,
+        'the client-disconnected notification of the terminated station'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl(deadPath)),
+        101,
+        'Once its dead socket is terminated, the station must be able to reconnect'
+      );
+      console.log(
+        `✓ A silent station is terminated after ${elapsed}ms, its upstream closed and its path freed`
+      );
+
+      await waitFor(
+        () => livePings >= 3,
+        4 * HEARTBEAT_INTERVAL_MS + 2000,
+        'heartbeat pings on the live station'
+      );
+      assert.equal(
+        live.ws.readyState,
+        WebSocket.OPEN,
+        'A station answering the pings must keep its connection'
+      );
+      assert.equal(openSessionsOn(livePath), 1);
+      const liveMsg = randomMessage('live-after-heartbeats');
+      await live.send(liveMsg);
+      assert.equal(await heartbeatUpstream.receiveMessage(2000), liveMsg);
+      live.close();
+      console.log(
+        `✓ A station answering the pings keeps its connection (${livePings} pings)`
+      );
+    } finally {
+      master.close();
+      multiplexer.kill('SIGKILL');
+      heartbeatUpstream.stop();
       await wait(500);
     }
   }

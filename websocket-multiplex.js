@@ -16,6 +16,22 @@ const DYNAMIC_UPSTREAM_RETRY_DELAY_MS =
   Number(process.env.DYNAMIC_UPSTREAM_RETRY_DELAY_MS) || 30000; // 30 seconds default
 const MESSAGE_QUEUE_TIMEOUT =
   Number(process.env.MESSAGE_QUEUE_TIMEOUT) || 30000; // 30 seconds default
+const STATION_HEARTBEAT_INTERVAL_MS = readIntervalMs(
+  process.env.STATION_HEARTBEAT_INTERVAL_MS,
+  30000
+);
+
+/**
+ * Reads a non-negative millisecond setting where 0 is meaningful (`Number(x) || fallback` would drop it)
+ * @param {string | undefined} value - The raw environment value
+ * @param {number} fallback - The value used when unset or invalid
+ * @returns {number} The interval in milliseconds
+ */
+function readIntervalMs(value, fallback) {
+  if (value === undefined || value.trim() === '') return fallback;
+  const ms = Number(value);
+  return Number.isFinite(ms) && ms >= 0 ? ms : fallback;
+}
 
 // Logging levels
 const LOG_LEVELS = {
@@ -229,7 +245,7 @@ async function resolveUpstreamUrl(pathname) {
 
 /**
  * Global connection store for tracking all active connections
- * @typedef {{ ws: WebSocket, connected: boolean, upstreamId: string, upstreamUrl: URL, generation: number, credentialDigest: Buffer | null }} ClientConnection
+ * @typedef {{ ws: WebSocket, connected: boolean, upstreamId: string, upstreamUrl: URL, generation: number, credentialDigest: Buffer | null, alive: boolean }} ClientConnection
  * @typedef {{ ws: WebSocket, connected: boolean, clientId: string, upstreamUrl: URL }} UpstreamConnection
  * @typedef {{ ws: WebSocket, path: string, type: 'root' | 'client' | 'upstream', targetPath: string }} MasterConnection
  * @typedef {{ message: string | Buffer, timestamp: string }} QueuedMessage
@@ -271,6 +287,41 @@ const pendingClients = new WeakMap();
 
 // Arrival order of handshakes: on a path, an older handshake never replaces a newer accepted connection.
 let handshakeCounter = 0;
+
+/** @type {NodeJS.Timeout | null} */
+let stationHeartbeat = null;
+
+/**
+ * Starts pinging the stations, unless STATION_HEARTBEAT_INTERVAL_MS is 0
+ * @returns {NodeJS.Timeout | null} The heartbeat timer, null when disabled
+ */
+function startStationHeartbeat() {
+  if (STATION_HEARTBEAT_INTERVAL_MS === 0) {
+    logger.info('Station heartbeat: disabled');
+    return null;
+  }
+  logger.info(`Station heartbeat: every ${STATION_HEARTBEAT_INTERVAL_MS}ms`);
+  return setInterval(checkStationsAlive, STATION_HEARTBEAT_INTERVAL_MS);
+}
+
+/**
+ * Terminates the stations silent since the previous tick and pings the others
+ */
+function checkStationsAlive() {
+  // A half-open station socket (e.g. a 4G IP change) keeps its upstream session, so the CSMS refuses the reconnection as a duplicate, until TCP gives up (~15 min).
+  for (const [pathname, client] of connections.clients) {
+    if (!client.alive) {
+      logger.warn(
+        `Station ${pathname} did not answer the heartbeat ping, terminating its connection`
+      );
+      // Emits 'close', so both legs go through handleClientDisconnection like a normal station close.
+      client.ws.terminate();
+      continue;
+    }
+    client.alive = false;
+    if (client.ws.readyState === WebSocket.OPEN) client.ws.ping();
+  }
+}
 
 /**
  * Initializes WebSocket servers and enables internal logging if needed
@@ -1270,11 +1321,11 @@ async function connectPendingClient(attempt) {
   // Always handled and always aborted: a listener that only logs keeps ws from ending the upstream handshake.
   upstreamWs.on('unexpected-response', (_request, response) => {
     handleUnexpectedResponse(pathname, response, upstreamUrl);
-    const status =
-      response.statusCode >= 400 && response.statusCode < 600
-        ? response.statusCode
-        : 502;
-    rejectPendingClient(attempt, status);
+    rejectPendingClient(
+      attempt,
+      stationStatusForUpstreamRefusal(response.statusCode),
+      `upstream answered HTTP ${response.statusCode}`
+    );
     upstreamWs.terminate();
   });
 
@@ -1302,17 +1353,32 @@ async function connectPendingClient(attempt) {
 }
 
 /**
+ * Maps an upstream handshake refusal to the HTTP status sent to the station
+ * @param {number} upstreamStatus - The status the upstream answered with
+ * @returns {number} 401 for any 4xx, the same status for a 5xx, 502 otherwise
+ */
+function stationStatusForUpstreamRefusal(upstreamStatus) {
+  // Any 4xx makes a station fall back to its previous network profile; passing 404 vs 401 through would tell unknown serials from wrong passwords.
+  if (upstreamStatus >= 400 && upstreamStatus < 500) return 401;
+  if (upstreamStatus >= 500 && upstreamStatus < 600) return upstreamStatus;
+  return 502;
+}
+
+/**
  * Refuses a held handshake with an HTTP status; the connection already on the path is left untouched
  * @param {PendingClient} attempt - The held handshake
  * @param {number} status - The HTTP status sent to the station
+ * @param {string} [cause] - Why, appended to the log line
  */
-function rejectPendingClient(attempt, status) {
+function rejectPendingClient(attempt, status, cause) {
   if (attempt.state !== 'pending') return;
   attempt.state = 'rejected';
   attempt.releaseSocket(false);
 
   logger.warn(
-    `Rejecting client handshake on ${attempt.pathname} with HTTP ${status}`
+    `Rejecting client handshake on ${attempt.pathname} with HTTP ${status}${
+      cause ? ` (${cause})` : ''
+    }`
   );
 
   const upstreamWs = attempt.upstreamWs;
@@ -1403,14 +1469,25 @@ function registerClientConnection(ws, req) {
     protocol: upstreamWs.protocol,
   });
 
-  connections.clients.set(pathname, {
+  /** @type {ClientConnection} */
+  const client = {
     ws,
     upstreamId: pathname,
     connected: true,
     upstreamUrl,
     generation: attempt.generation,
     credentialDigest: attempt.credentialDigest,
-  });
+    alive: true,
+  };
+  connections.clients.set(pathname, client);
+
+  // Any frame from the station proves the socket is alive, not only the pong to our heartbeat ping.
+  const markAlive = () => {
+    client.alive = true;
+  };
+  ws.on('pong', markAlive);
+  ws.on('ping', markAlive);
+  ws.on('message', markAlive);
 
   connections.upstreams.set(pathname, {
     ws: upstreamWs,
@@ -1456,6 +1533,11 @@ function registerClientConnection(ws, req) {
  */
 function shutdownServer() {
   logger.info('Shutting down server...');
+
+  if (stationHeartbeat) {
+    clearInterval(stationHeartbeat);
+    stationHeartbeat = null;
+  }
 
   // Close all connections
   logger.debug(`Closing ${connections.clients.size} client connections`);
@@ -1524,6 +1606,8 @@ function main() {
   });
 
   setupProcessEventHandlers();
+
+  stationHeartbeat = startStationHeartbeat();
 
   // Start the servers
   server.listen(PORT, () => {

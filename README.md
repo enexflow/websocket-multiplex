@@ -38,6 +38,7 @@ The multiplexer can be configured using environment variables:
 - `DYNAMIC_UPSTREAM_CONFIG_URL`: Optional URL for dynamic upstream resolution. When set, the multiplexer will make HTTP GET requests to `DYNAMIC_UPSTREAM_CONFIG_URL + pathname` to resolve the upstream URL for each connection. Falls back to `UPSTREAM_URL` on failure.
 - `LOG_LEVEL`: Controls the verbosity of logging (default: INFO)
 - `MESSAGE_QUEUE_TIMEOUT`: Time in milliseconds before queued messages are discarded (default: 30000)
+- `STATION_HEARTBEAT_INTERVAL_MS`: How often, in milliseconds, each client connection is pinged; a client that sent nothing (no pong, ping nor message) since the previous ping is terminated, which also closes its upstream connection (default: 30000, `0` disables the heartbeat)
 
 ## Example (using docker)
 
@@ -113,10 +114,14 @@ MESSAGE_QUEUE_TIMEOUT=60000 node websocket-multiplex.js
 3. When a client connects to a path (e.g., `/chat`), the multiplexer:
    - Holds the client handshake and connects to the upstream server with the same path
    - Completes the client handshake only once the upstream accepted it, with the subprotocol
-     the upstream selected; an upstream refusal is returned to the client as the same HTTP
-     status (e.g. 401, 404), any other upstream failure as 502
+     the upstream selected. An upstream refusal is returned to the client as `401` for any
+     4xx (so the status does not tell an unknown path from wrong credentials), as the same
+     status for a 5xx, and any other upstream failure as 502; the log keeps the upstream status
    - Forwards messages between the client and upstream server
    - Reports all activity to the master control connection
+   - Pings the client every `STATION_HEARTBEAT_INTERVAL_MS` and terminates it once it stays
+     silent for a whole interval, so a half-open client socket does not hold its path and its
+     upstream session until TCP gives up; upstream connections are not pinged
 4. When a client connects to a path that already has a connection:
    - With the same non-empty `Authorization` header as the connected client (a reconnection),
      the existing connection is closed first, then the new one is set up
