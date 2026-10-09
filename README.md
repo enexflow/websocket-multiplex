@@ -84,11 +84,20 @@ Example debug log output:
 [DEBUG] Received ping from client /chat: empty
 ```
 
+### Credentials in logs
+
+The `Authorization` header is never logged nor handed to master listeners: it appears as
+`Basic <redacted>`. As a last line of defence, every log line is scanned: `Basic`/`Bearer`
+values are masked, and a line mentioning `AuthorizationKey` (OCPP 1.6) or `BasicAuthPassword`
+(OCPP 2.0.1) is replaced as a whole, since it may carry a station password. Frames are still
+forwarded untouched to the station, the upstream and the connection masters.
+
 ### Message Queuing
 
-If a client sends messages before the upstream connection is established, messages are queued and:
+A client handshake only completes once its upstream connection is open, so clients cannot send
+messages before it. A message from a client whose upstream is gone (e.g. a replaced connection
+still closing) is queued and:
 
-- Held for delivery until the upstream connection is ready
 - Discarded after the timeout period (default: 30 seconds)
 - Logged with appropriate notifications to the master control
 
@@ -102,9 +111,18 @@ MESSAGE_QUEUE_TIMEOUT=60000 node websocket-multiplex.js
 1. The multiplexer creates a WebSocket server that listens for client connections
 2. A separate WebSocket server is created for the master control interface
 3. When a client connects to a path (e.g., `/chat`), the multiplexer:
-   - Creates a connection to the upstream server with the same path
+   - Holds the client handshake and connects to the upstream server with the same path
+   - Completes the client handshake only once the upstream accepted it, with the subprotocol
+     the upstream selected; an upstream refusal is returned to the client as the same HTTP
+     status (e.g. 401, 404), any other upstream failure as 502
    - Forwards messages between the client and upstream server
    - Reports all activity to the master control connection
+4. When a client connects to a path that already has a connection:
+   - With the same non-empty `Authorization` header as the connected client (a reconnection),
+     the existing connection is closed first, then the new one is set up
+   - Otherwise, including when either side has no `Authorization` header, the existing
+     connection is kept until the upstream accepts the newcomer, and is left untouched if the
+     upstream refuses it
 
 ## Master Control Connection
 
@@ -134,7 +152,7 @@ The multiplexer sends several types of messages to the master control:
   event: 'client-connected',  // or 'client-disconnected', 'upstream-connected', 'upstream-disconnected', 'connection-closed-by-master'
   connectionId: '/path',
   ip: '127.0.0.1',           // Only for client-connected
-  headers: { ... },          // Only for client-connected
+  headers: { ... },          // Only for client-connected; authorization is masked
   code: 1000,                // Only for disconnection events
   reason: 'Normal closure',  // Only for disconnection events
   timestamp: '2024-01-01T12:00:00.000Z'  // Only for connection-closed-by-master
@@ -151,15 +169,15 @@ The multiplexer sends several types of messages to the master control:
 }
 ```
 
-#### Queued Message Events
+#### Discarded Message Events
 ```javascript
 {
   type: 'message',
-  direction: 'client-to-upstream-dequeued',
+  event: 'message-discarded',
   connectionId: '/path',
   message: 'message content',
   queuedAt: '2024-01-01T12:00:00.000Z',
-  sentAt: '2024-01-01T12:00:01.000Z'
+  reason: 'timeout'
 }
 ```
 
