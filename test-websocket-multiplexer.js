@@ -14,6 +14,13 @@ const CONFIG = {
   TIMEOUT_MS: 5000,
 };
 
+// Real-looking station credentials: the multiplexer output is checked for any trace of them.
+const basicAuth = (user, password) =>
+  `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`;
+const STATION_PASSWORD = 'station-secret-password';
+const STATION_AUTH = basicAuth('CP001', STATION_PASSWORD);
+const FRAME_SECRET = 'frame-secret-authorization-key';
+
 // Global reference to the test runner for cleanup
 /** @type {TestRunner} */
 let globalTestRunner = null;
@@ -77,6 +84,51 @@ async function waitFor(predicate, timeoutMs, label) {
   throw new Error(`Timeout waiting for ${label}`);
 }
 
+// Resolves with the HTTP status the multiplexer answers a handshake with (101 when accepted).
+function handshakeStatus(url, headers = {}) {
+  return withTimeout(
+    new Promise((resolve) => {
+      const ws = new WebSocket(url, { headers });
+      ws.on('error', () => {});
+      ws.on('unexpected-response', (_request, response) => {
+        resolve(response.statusCode);
+        ws.terminate();
+      });
+      ws.on('open', () => {
+        resolve(101);
+        ws.close();
+      });
+    }),
+    3000,
+    `No handshake answer on ${url}`
+  );
+}
+
+// Spawns a multiplexer and resolves once it listens.
+function startMultiplexer(label, env) {
+  const child = spawn('node', ['websocket-multiplex.js'], {
+    env: { ...process.env, ...env },
+  });
+  child.stdout.on('data', (data) => {
+    console.log(`[${label}] ${data.toString().trim()}`);
+  });
+  child.stderr.on('data', (data) => {
+    console.error(`[${label} ERROR] ${data.toString().trim()}`);
+  });
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      child.stdout.on('data', (data) => {
+        if (data.toString().includes('multiplexer running')) resolve(child);
+      });
+      child.on('exit', (code) =>
+        reject(new Error(`${label} exited with code ${code}`))
+      );
+    }),
+    5000,
+    `${label} startup timed out`
+  );
+}
+
 // Test results tracking
 const testResults = {
   serverReceivedMessages: [],
@@ -92,10 +144,10 @@ const testResults = {
 
 // Test server implementation
 class TestServer {
-  constructor(port) {
+  constructor(port, wsOptions = {}) {
     this.port = port;
     this.server = http.createServer();
-    this.wss = new WebSocket.Server({ server: this.server });
+    this.wss = new WebSocket.Server({ server: this.server, ...wsOptions });
     this.messageQueue = [];
     /** @type {Map<string, WebSocket>} */
     this.connections = new Map();
@@ -178,6 +230,8 @@ class MultiplexerProcess {
   constructor(config) {
     this.config = config;
     this.process = null;
+    // Everything the multiplexer wrote, to check that no credential leaks into its logs.
+    this.output = '';
   }
 
   start() {
@@ -193,6 +247,7 @@ class MultiplexerProcess {
       this.process = spawn('node', ['websocket-multiplex.js'], { env });
 
       this.process.stdout.on('data', (data) => {
+        this.output += data.toString();
         console.log(`[MULTIPLEXER] ${data.toString().trim()}`);
         if (data.toString().includes('multiplexer running')) {
           resolve();
@@ -200,6 +255,7 @@ class MultiplexerProcess {
       });
 
       this.process.stderr.on('data', (data) => {
+        this.output += data.toString();
         console.error(`[MULTIPLEXER ERROR] ${data.toString().trim()}`);
       });
 
@@ -497,7 +553,7 @@ class TestRunner {
   async runTests() {
     console.log('\nRunning WebSocket Multiplexer Tests...\n');
 
-    const testHeaders = { authorization: 'TestTestTest' };
+    const testHeaders = { authorization: STATION_AUTH };
 
     // Setup clients
     const client = new WebSocketClient(
@@ -611,6 +667,23 @@ class TestRunner {
     await masterClientMonitor.send(monitorMsg);
     assert.equal(await client.receiveMessage(), monitorMsg);
 
+    // A CSMS setting the station password: forwarded untouched, kept out of the logs.
+    console.log('Test: Credential-bearing frame is forwarded');
+    const credentialFrame = JSON.stringify([
+      2,
+      'cfg-1',
+      'ChangeConfiguration',
+      { key: 'AuthorizationKey', value: FRAME_SECRET },
+    ]);
+    this.upstream.send(credentialFrame, this.config.TEST_PATH);
+    assert.equal(await client.receiveMessage(), credentialFrame);
+    assert.equal(await masterClientMonitor.receiveMessage(), credentialFrame);
+    const credentialFrameData = JSON.parse(
+      await masterControl.receiveMessage()
+    );
+    assert.equal(credentialFrameData.direction, 'upstream-to-client');
+    assert.equal(credentialFrameData.message, credentialFrame);
+
     // Test 7: Client disconnection notification
     console.log('Test: Client disconnection notification');
     client.close();
@@ -636,6 +709,15 @@ class TestRunner {
     const clientConnectedData = JSON.parse(clientConnectedMsg);
     assert.equal(clientConnectedData.type, 'connection');
     assert.equal(clientConnectedData.event, 'client-connected');
+    assert.equal(
+      clientConnectedData.headers.authorization,
+      'Basic <redacted>',
+      'Masters must only see a masked Authorization header'
+    );
+    assert(
+      !clientConnectedMsg.includes(STATION_AUTH.slice('Basic '.length)),
+      'The client-connected notification must not carry the credential'
+    );
     assert.equal(
       clientForClose.ws.readyState,
       WebSocket.OPEN,
@@ -677,11 +759,34 @@ class TestRunner {
       'Connection should be closed'
     );
 
+    console.log('Test: No station credential in the multiplexer output');
+    const output = this.multiplexer.output;
+    assert(
+      output.includes('Basic <redacted>'),
+      'The masked Authorization header should be logged'
+    );
+    for (const secret of [
+      STATION_AUTH.slice('Basic '.length),
+      STATION_PASSWORD,
+      FRAME_SECRET,
+    ]) {
+      assert(
+        !output.includes(secret),
+        `The multiplexer output leaks a credential (${secret.slice(0, 4)}...)`
+      );
+    }
+
     // Test 9: Dynamic upstream configuration
     await this.testDynamicUpstream();
 
     // Test 10: Replaced or superseded connections never leave a ghost upstream
     await this.testConnectionReplacementRaces();
+
+    // Test 11: Upstream refusals reach the station and never evict the connected one
+    await this.testUpstreamRefusals();
+
+    // Test 12: The heartbeat frees the path of a silent station and keeps live ones
+    await this.testStationHeartbeat();
 
     // Cleanup
     masterControl.close();
@@ -1046,11 +1151,12 @@ class TestRunner {
         '✓ Late close of a replaced upstream keeps the new connection and leaves no ghost'
       );
 
-      // Race 2: the client leaves while its upstream is being resolved.
+      // Race 2: the client leaves while its handshake is held for upstream resolution.
       const leftPath = '/slow-left';
-      const leaver = new WebSocketClient(proxyUrl(leftPath));
-      await leaver.connect();
-      leaver.close();
+      const leaver = new WebSocket(proxyUrl(leftPath));
+      leaver.on('error', () => {});
+      await wait(100);
+      leaver.terminate();
       await wait(SLOW_RESOLUTION_MS + 700);
       assert.equal(
         everOpenedOn(leftPath),
@@ -1064,11 +1170,20 @@ class TestRunner {
       // Race 3: a second connection arrives while the first one is still being resolved.
       const concurrentPath = '/slow-concurrent';
       const older = new WebSocketClient(proxyUrl(concurrentPath));
-      await older.connect();
+      // The older handshake is either accepted then replaced, or refused if the newer one won upstream.
+      const olderSettled = older.connect().catch(() => {});
       await wait(100);
       const newer = new WebSocketClient(proxyUrl(concurrentPath));
       await newer.connect();
-      await wait(SLOW_RESOLUTION_MS + 700);
+      await olderSettled;
+      await waitFor(
+        () =>
+          older.ws.readyState !== WebSocket.OPEN &&
+          openSessionsOn(concurrentPath) === 1,
+        2000,
+        'the older connection to give way'
+      );
+      await wait(300);
       assert.equal(
         openSessionsOn(concurrentPath),
         1,
@@ -1092,6 +1207,337 @@ class TestRunner {
       raceMultiplexer.kill('SIGKILL');
       configServer.close();
       raceUpstream.stop();
+      await wait(500);
+    }
+  }
+
+  async testUpstreamRefusals() {
+    console.log(
+      'Test: Upstream refusals reach the newcomer and never evict the connected station'
+    );
+
+    const AUTH_UPSTREAM_PORT = this.config.TEST_PORT + 300;
+    const AUTH_PROXY_PORT = this.config.PROXY_PORT + 30;
+    const AUTH_MASTER_PORT = this.config.MASTER_PORT + 30;
+    const stationPath = '/CP-AUTH';
+    const stationAuth = basicAuth('CP-AUTH', 'right-password');
+    const rotatedAuth = basicAuth('CP-AUTH', 'rotated-password');
+    const acceptedAuths = new Set([stationAuth, rotatedAuth]);
+    const anonymousPath = '/open-CP-ANON';
+
+    /** @type {Map<WebSocket, string>} */
+    const upstreamSessions = new Map();
+    const openSessionsOn = (path) =>
+      [...upstreamSessions.entries()].filter(
+        ([ws, sessionPath]) =>
+          sessionPath === path && ws.readyState === WebSocket.OPEN
+      ).length;
+
+    // Plays the CSMS: unknown stations get a 404, forbidden ones a 403, wrong or missing credentials a 401.
+    const authUpstream = new TestServer(AUTH_UPSTREAM_PORT, {
+      verifyClient: (info, done) => {
+        if (info.req.url.startsWith('/unknown')) return done(false, 404);
+        if (info.req.url.startsWith('/forbidden')) return done(false, 403);
+        if (info.req.url.startsWith('/unavailable')) return done(false, 503);
+        // Stations without Basic auth (security profile 0): accepted, but a duplicate identity is refused.
+        if (info.req.url.startsWith('/open')) {
+          if (openSessionsOn(info.req.url) > 0) return done(false, 409);
+          return done(true);
+        }
+        if (!acceptedAuths.has(info.req.headers.authorization)) {
+          return done(false, 401);
+        }
+        done(true);
+      },
+    });
+    authUpstream.wss.on('connection', (ws, req) => {
+      upstreamSessions.set(ws, req.url);
+    });
+    await authUpstream.start();
+
+    // DEBUG on purpose: its unexpected-response listener used to leave refused handshakes hanging.
+    const multiplexer = await startMultiplexer('AUTH MULTIPLEXER', {
+      PORT: AUTH_PROXY_PORT.toString(),
+      MASTER_PORT: AUTH_MASTER_PORT.toString(),
+      UPSTREAM_URL: `ws://localhost:${AUTH_UPSTREAM_PORT}`,
+      LOG_LEVEL: 'DEBUG',
+    });
+    const proxyUrl = (path) => `ws://localhost:${AUTH_PROXY_PORT}${path}`;
+
+    try {
+      const station = new WebSocketClient(proxyUrl(stationPath), {
+        authorization: stationAuth,
+      });
+      await station.connect();
+      await waitFor(
+        () => openSessionsOn(stationPath) === 1,
+        2000,
+        'the station upstream session'
+      );
+
+      assert.equal(
+        await handshakeStatus(proxyUrl(stationPath), {
+          authorization: basicAuth('CP-AUTH', 'guessed-password'),
+        }),
+        401,
+        'An upstream 401 must reach the newcomer'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl(stationPath)),
+        401,
+        'A newcomer without credentials must get the upstream 401'
+      );
+      // Every upstream 4xx reaches the station as 401: the status must not tell an unknown serial from a wrong password.
+      assert.equal(
+        await handshakeStatus(proxyUrl('/unknown-station'), {
+          authorization: stationAuth,
+        }),
+        401,
+        'An upstream 404 must reach the newcomer as a 401'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl('/forbidden-station'), {
+          authorization: stationAuth,
+        }),
+        401,
+        'An upstream 403 must reach the newcomer as a 401'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl('/unavailable-station'), {
+          authorization: stationAuth,
+        }),
+        503,
+        'An upstream 5xx must reach the newcomer unchanged'
+      );
+
+      await wait(300);
+      assert.equal(
+        station.ws.readyState,
+        WebSocket.OPEN,
+        'A newcomer refused upstream must not evict the connected station'
+      );
+      assert.equal(openSessionsOn(stationPath), 1);
+      const stationMsg = randomMessage('station-still-connected');
+      await station.send(stationMsg);
+      assert.equal(await authUpstream.receiveMessage(2000), stationMsg);
+      const csmsMsg = randomMessage('csms-to-station');
+      authUpstream.send(csmsMsg, stationPath);
+      assert.equal(await station.receiveMessage(), csmsMsg);
+      console.log(
+        '✓ Upstream 401/403/404 reach the newcomer as 401, a 5xx unchanged, and the connected station keeps working'
+      );
+
+      // A station back from a network drop reconnects with the credentials it was accepted with.
+      const reconnected = new WebSocketClient(proxyUrl(stationPath), {
+        authorization: stationAuth,
+      });
+      await reconnected.connect();
+      await waitFor(
+        () =>
+          station.ws.readyState === WebSocket.CLOSED &&
+          openSessionsOn(stationPath) === 1,
+        2000,
+        'the stale connection to be replaced'
+      );
+      const reconnectedMsg = randomMessage('after-reconnection');
+      await reconnected.send(reconnectedMsg);
+      assert.equal(await authUpstream.receiveMessage(2000), reconnectedMsg);
+      console.log(
+        '✓ A station reconnecting with its credentials replaces its stale connection'
+      );
+
+      // Different credentials the upstream accepts (rotated password): replaced once the upstream accepted.
+      const rotated = new WebSocketClient(proxyUrl(stationPath), {
+        authorization: rotatedAuth,
+      });
+      await rotated.connect();
+      await waitFor(
+        () =>
+          reconnected.ws.readyState === WebSocket.CLOSED &&
+          openSessionsOn(stationPath) === 1,
+        2000,
+        'the connection accepted upstream to replace the previous one'
+      );
+      const rotatedMsg = randomMessage('after-rotation');
+      await rotated.send(rotatedMsg);
+      assert.equal(await authUpstream.receiveMessage(2000), rotatedMsg);
+      rotated.close();
+      console.log(
+        '✓ A newcomer accepted upstream replaces the connected station'
+      );
+
+      // Two missing Authorization headers are not the same credential: the newcomer waits for the upstream verdict.
+      const anonymousStation = new WebSocketClient(proxyUrl(anonymousPath));
+      await anonymousStation.connect();
+      await waitFor(
+        () => openSessionsOn(anonymousPath) === 1,
+        2000,
+        'the anonymous station upstream session'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl(anonymousPath)),
+        401,
+        'An anonymous newcomer must get the upstream duplicate refusal (409 upstream, 401 to the station)'
+      );
+      await wait(300);
+      assert.equal(
+        anonymousStation.ws.readyState,
+        WebSocket.OPEN,
+        'An anonymous newcomer must not evict a station connected without credentials'
+      );
+      assert.equal(openSessionsOn(anonymousPath), 1);
+      const anonymousMsg = randomMessage('anonymous-station-still-connected');
+      await anonymousStation.send(anonymousMsg);
+      assert.equal(await authUpstream.receiveMessage(2000), anonymousMsg);
+      anonymousStation.close();
+      console.log(
+        '✓ An anonymous newcomer never evicts a station connected without credentials'
+      );
+    } finally {
+      multiplexer.kill('SIGKILL');
+      authUpstream.stop();
+      await wait(500);
+    }
+  }
+
+  async testStationHeartbeat() {
+    console.log(
+      'Test: The heartbeat terminates a silent station and keeps a live one'
+    );
+
+    const HEARTBEAT_UPSTREAM_PORT = this.config.TEST_PORT + 400;
+    const HEARTBEAT_PROXY_PORT = this.config.PROXY_PORT + 40;
+    const HEARTBEAT_MASTER_PORT = this.config.MASTER_PORT + 40;
+    const HEARTBEAT_INTERVAL_MS = 500;
+    // Stations without credentials: a newcomer never evicts them, so only the heartbeat frees a dead one's path.
+    const deadPath = '/CP-DEAD';
+    const livePath = '/CP-LIVE';
+
+    /** @type {Map<WebSocket, string>} */
+    const upstreamSessions = new Map();
+    const openSessionsOn = (path) =>
+      [...upstreamSessions.entries()].filter(
+        ([ws, sessionPath]) =>
+          sessionPath === path && ws.readyState === WebSocket.OPEN
+      ).length;
+
+    // Plays Citrine: an identity that still has an upstream session is refused as a duplicate.
+    const heartbeatUpstream = new TestServer(HEARTBEAT_UPSTREAM_PORT, {
+      verifyClient: (info, done) => {
+        if (openSessionsOn(info.req.url) > 0) return done(false, 401);
+        done(true);
+      },
+    });
+    heartbeatUpstream.wss.on('connection', (ws, req) => {
+      upstreamSessions.set(ws, req.url);
+    });
+    await heartbeatUpstream.start();
+
+    const multiplexer = await startMultiplexer('HEARTBEAT MULTIPLEXER', {
+      PORT: HEARTBEAT_PROXY_PORT.toString(),
+      MASTER_PORT: HEARTBEAT_MASTER_PORT.toString(),
+      UPSTREAM_URL: `ws://localhost:${HEARTBEAT_UPSTREAM_PORT}`,
+      STATION_HEARTBEAT_INTERVAL_MS: HEARTBEAT_INTERVAL_MS.toString(),
+      LOG_LEVEL: 'DEBUG',
+    });
+    const proxyUrl = (path) => `ws://localhost:${HEARTBEAT_PROXY_PORT}${path}`;
+    const master = new WebSocketClient(
+      `ws://localhost:${HEARTBEAT_MASTER_PORT}/`
+    );
+
+    try {
+      await master.connect();
+
+      const live = new WebSocketClient(proxyUrl(livePath));
+      await live.connect();
+      let livePings = 0;
+      live.ws.on('ping', () => {
+        livePings++;
+      });
+
+      // autoPong off: the station receives the pings but never answers, like the far end of a half-open socket.
+      const dead = new WebSocket(proxyUrl(deadPath), { autoPong: false });
+      let deadClosedAt = 0;
+      dead.on('close', () => {
+        deadClosedAt = Date.now();
+      });
+      await withTimeout(
+        new Promise((resolve, reject) => {
+          dead.once('open', resolve);
+          dead.once('error', reject);
+        }),
+        3000,
+        'The silent station could not connect'
+      );
+      const deadOpenedAt = Date.now();
+      await waitFor(
+        () => openSessionsOn(deadPath) === 1 && openSessionsOn(livePath) === 1,
+        2000,
+        'both upstream sessions'
+      );
+
+      await waitFor(
+        () => deadClosedAt > 0,
+        3 * HEARTBEAT_INTERVAL_MS + 2000,
+        'the silent station to be terminated'
+      );
+      const elapsed = deadClosedAt - deadOpenedAt;
+      assert(
+        elapsed >= 0.8 * HEARTBEAT_INTERVAL_MS,
+        `A station must get a whole interval to answer the ping (terminated after ${elapsed}ms)`
+      );
+      assert(
+        elapsed <= 2 * HEARTBEAT_INTERVAL_MS + 1000,
+        `A silent station must be terminated within about two intervals (took ${elapsed}ms)`
+      );
+      await waitFor(
+        () => openSessionsOn(deadPath) === 0,
+        2000,
+        'the upstream session of the terminated station to close'
+      );
+      await waitFor(
+        () =>
+          master.messageQueue.some((raw) => {
+            const event = JSON.parse(raw);
+            return (
+              event.event === 'client-disconnected' &&
+              event.connectionId === deadPath
+            );
+          }),
+        2000,
+        'the client-disconnected notification of the terminated station'
+      );
+      assert.equal(
+        await handshakeStatus(proxyUrl(deadPath)),
+        101,
+        'Once its dead socket is terminated, the station must be able to reconnect'
+      );
+      console.log(
+        `✓ A silent station is terminated after ${elapsed}ms, its upstream closed and its path freed`
+      );
+
+      await waitFor(
+        () => livePings >= 3,
+        4 * HEARTBEAT_INTERVAL_MS + 2000,
+        'heartbeat pings on the live station'
+      );
+      assert.equal(
+        live.ws.readyState,
+        WebSocket.OPEN,
+        'A station answering the pings must keep its connection'
+      );
+      assert.equal(openSessionsOn(livePath), 1);
+      const liveMsg = randomMessage('live-after-heartbeats');
+      await live.send(liveMsg);
+      assert.equal(await heartbeatUpstream.receiveMessage(2000), liveMsg);
+      live.close();
+      console.log(
+        `✓ A station answering the pings keeps its connection (${livePings} pings)`
+      );
+    } finally {
+      master.close();
+      multiplexer.kill('SIGKILL');
+      heartbeatUpstream.stop();
       await wait(500);
     }
   }
