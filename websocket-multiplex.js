@@ -12,8 +12,9 @@ const DYNAMIC_UPSTREAM_CONFIG_URL = process.env.DYNAMIC_UPSTREAM_CONFIG_URL;
 const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
 const DYNAMIC_UPSTREAM_MAX_ATTEMPTS =
   Number(process.env.DYNAMIC_UPSTREAM_MAX_ATTEMPTS) || 4;
+// Short: the station handshake waits on the resolution, and stations give up after a few tens of seconds.
 const DYNAMIC_UPSTREAM_RETRY_DELAY_MS =
-  Number(process.env.DYNAMIC_UPSTREAM_RETRY_DELAY_MS) || 30000; // 30 seconds default
+  Number(process.env.DYNAMIC_UPSTREAM_RETRY_DELAY_MS) || 2000;
 const MESSAGE_QUEUE_TIMEOUT =
   Number(process.env.MESSAGE_QUEUE_TIMEOUT) || 30000; // 30 seconds default
 const STATION_HEARTBEAT_INTERVAL_MS = readIntervalMs(
@@ -169,6 +170,9 @@ const masterWsOptions = {
   perMessageDeflate: true,
 };
 
+/** A config service answer that a retry would only repeat; the default upstream is used at once */
+class DefinitiveResolutionError extends Error {}
+
 /**
  * Resolves the upstream URL for a given pathname using dynamic configuration if available
  * @param {string} pathname - The connection path
@@ -195,8 +199,13 @@ async function resolveUpstreamUrl(pathname) {
         signal: AbortSignal.timeout(5000), // 5 second timeout
       });
 
-      if (!response.ok)
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      if (!response.ok) {
+        const message = `HTTP ${response.status}: ${response.statusText}`;
+        // A 4xx is the service's answer (404 = unknown station): a retry cannot change it.
+        throw response.status < 500
+          ? new DefinitiveResolutionError(message)
+          : new Error(message);
+      }
 
       const upstreamUrlString = (await response.text()).trim();
 
@@ -205,14 +214,14 @@ async function resolveUpstreamUrl(pathname) {
       try {
         upstreamUrl = new URL(upstreamUrlString);
       } catch (urlError) {
-        throw new Error(
+        throw new DefinitiveResolutionError(
           `Invalid URL returned from ${configUrl}: ${upstreamUrlString}. ${urlError}`
         );
       }
 
       // Validate that it's a WebSocket URL
       if (upstreamUrl.protocol !== 'ws:' && upstreamUrl.protocol !== 'wss:') {
-        throw new Error(
+        throw new DefinitiveResolutionError(
           `Invalid WebSocket URL protocol: ${upstreamUrl.protocol}. Expected ws: or wss:`
         );
       }
@@ -222,7 +231,8 @@ async function resolveUpstreamUrl(pathname) {
       );
       return upstreamUrl;
     } catch (error) {
-      const isLastAttempt = attempt === maxAttempts;
+      const isLastAttempt =
+        attempt === maxAttempts || error instanceof DefinitiveResolutionError;
       logger.warn(
         `Dynamic upstream resolution failed for ${pathname} on attempt ${attempt}/${maxAttempts}: ${error.message}${
           isLastAttempt
