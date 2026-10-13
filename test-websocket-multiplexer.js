@@ -805,6 +805,8 @@ class TestRunner {
     await dynamicUpstream.start();
 
     const headers = { 'Content-Type': 'text/plain' };
+    /** @type {Map<string, number>} */
+    const configRequests = new Map();
     const handlers = {
       '/test-dynamic': (_req, res) =>
         res
@@ -814,10 +816,17 @@ class TestRunner {
         res.writeHead(200, headers).end('not-a-valid-url'),
       '/test-invalid-protocol': (_req, res) =>
         res.writeHead(200, headers).end('http://localhost:9000/test'),
+      '/test-flaky': (req, res) =>
+        configRequests.get(req.url) === 1
+          ? res.writeHead(503, headers).end('Unavailable')
+          : res
+              .writeHead(200, headers)
+              .end(`ws://localhost:${DYNAMIC_UPSTREAM_PORT}/test-flaky`),
     };
 
     // Create a dynamic config server that routes to the alternative upstream
     const configServer = http.createServer((req, res) => {
+      configRequests.set(req.url, (configRequests.get(req.url) ?? 0) + 1);
       const handler = handlers[req.url];
       return handler
         ? handler(req, res)
@@ -842,6 +851,9 @@ class TestRunner {
       MASTER_PORT: (this.config.MASTER_PORT + 10).toString(),
       UPSTREAM_URL: `ws://localhost:${this.config.TEST_PORT}`, // Default fallback
       DYNAMIC_UPSTREAM_CONFIG_URL: `http://localhost:${CONFIG_PORT}`,
+      // Retries on, so a retried definitive answer (4xx, bad URL) outlasts the 3 s connect timeouts below.
+      DYNAMIC_UPSTREAM_MAX_ATTEMPTS: '4',
+      DYNAMIC_UPSTREAM_RETRY_DELAY_MS: '1500',
       LOG_LEVEL: 'DEBUG',
     };
 
@@ -964,9 +976,37 @@ class TestRunner {
       );
 
       fallbackClient.close();
+      assert.equal(
+        configRequests.get('/test-fallback'),
+        1,
+        'A 404 from the config service must not be retried'
+      );
       console.log(
         '✓ Dynamic upstream fallback successful - message routed to default upstream'
       );
+
+      // A 5xx is transient: retried, then the resolved upstream is used
+      const flakyClient = new WebSocketClient(
+        `ws://localhost:${DYNAMIC_MULTIPLEXER_PORT}/test-flaky`
+      );
+      await withTimeout(
+        flakyClient.connect(),
+        4000,
+        'Flaky config client connection timed out'
+      );
+      const flakyMsg = randomMessage('flaky-test');
+      await flakyClient.send(flakyMsg);
+      assert.equal(
+        await withTimeout(
+          dynamicUpstream.receiveMessage(),
+          3000,
+          'Waiting for flaky config message timed out'
+        ),
+        flakyMsg
+      );
+      assert.equal(configRequests.get('/test-flaky'), 2);
+      flakyClient.close();
+      console.log('✓ A 5xx from the config service is retried');
 
       // Test 3: Invalid URL validation - should fall back to default
       const invalidUrlClient = new WebSocketClient(
