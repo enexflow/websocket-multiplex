@@ -12,10 +12,10 @@ function wait(ms) {
  * to all of them.
  */
 class TestServer {
-  constructor(port) {
+  constructor(port, wsOptions = {}) {
     this.port = port;
     this.server = http.createServer();
-    this.wss = new WebSocket.Server({ server: this.server });
+    this.wss = new WebSocket.Server({ server: this.server, ...wsOptions });
     this.messageQueue = [];
     /** @type {Map<string, WebSocket>} */
     this.connections = new Map();
