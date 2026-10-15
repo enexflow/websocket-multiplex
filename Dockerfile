@@ -16,7 +16,7 @@ COPY package*.json ./
 RUN npm ci --only=production && \
     npm cache clean --force
 
-COPY websocket-multiplex.js ./
+COPY websocket-multiplex.js redis-master-bridge.js ./
 
 # Set proper permissions
 RUN chown -R appuser:appgroup /app
@@ -34,10 +34,13 @@ ENV MASTER_PORT=8081
 ENV UPSTREAM_URL=ws://localhost:9000
 ENV LOG_LEVEL=INFO
 ENV MESSAGE_QUEUE_TIMEOUT=30000
+# REDIS_URL is left unset by default: the master control-plane bridge is a
+# no-op until it's provided (e.g. redis://host:6379).
+ENV REDIS_KEY_PREFIX=ws-multiplex:
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1
 
 # Start the application
 CMD ["node", "websocket-multiplex.js"]
