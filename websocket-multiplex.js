@@ -2,7 +2,9 @@ const WebSocket = require('ws');
 const crypto = require('node:crypto');
 const http = require('node:http');
 const url = require('node:url');
+const os = require('node:os');
 const util = require('node:util');
+const { createRedisMasterBridge } = require('./redis-master-bridge');
 
 // Configuration
 const PORT = process.env.PORT || 8080;
@@ -17,6 +19,9 @@ const DYNAMIC_UPSTREAM_RETRY_DELAY_MS =
   Number(process.env.DYNAMIC_UPSTREAM_RETRY_DELAY_MS) || 2000;
 const MESSAGE_QUEUE_TIMEOUT =
   Number(process.env.MESSAGE_QUEUE_TIMEOUT) || 30000; // 30 seconds default
+const REDIS_URL = process.env.REDIS_URL || '';
+const REDIS_KEY_PREFIX = process.env.REDIS_KEY_PREFIX || 'ws-multiplex:';
+const INSTANCE_ID = process.env.INSTANCE_ID || os.hostname();
 const STATION_HEARTBEAT_INTERVAL_MS = readIntervalMs(
   process.env.STATION_HEARTBEAT_INTERVAL_MS,
   30000
@@ -154,6 +159,18 @@ function isSameCredential(connected, incoming) {
 const server = http.createServer();
 const masterServer = http.createServer();
 
+// Plain HTTP health endpoint for Kubernetes readiness/liveness probes
+// (the WebSocket upgrade handler below never sees non-upgrade requests).
+server.on('request', (req, res) => {
+  if (req.url === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
 // WebSocket server options with logging
 const wsOptions = {
   server,
@@ -275,6 +292,15 @@ const connections = {
   messageQueues: new Map(),
 };
 
+// Fans master control-plane events/commands out across instances via Redis
+// (no-op when REDIS_URL is unset). Never sits on the client<->upstream path.
+const redisBridge = createRedisMasterBridge({
+  redisUrl: REDIS_URL,
+  keyPrefix: REDIS_KEY_PREFIX,
+  instanceId: INSTANCE_ID,
+  logger,
+});
+
 /**
  * A station handshake held open until its upstream answers
  * @typedef {{
@@ -382,14 +408,24 @@ function setupMasterServerEventListeners(masterWss) {
 }
 
 /**
- * Sends current connection status to the master
+ * Sends current connection status to the master, merging in paths registered
+ * by other instances (via Redis) so a root master sees the whole cluster
+ * regardless of which instance it is connected to.
  * @param {WebSocket} masterWs - The master WebSocket connection
  */
-function sendStatusToMaster(masterWs) {
+async function sendStatusToMaster(masterWs) {
+  const remotePaths = await redisBridge.listRegisteredPaths();
+  const clients = new Set(connections.clients.keys());
+  const upstreams = new Set(connections.upstreams.keys());
+  for (const pathname of remotePaths) {
+    clients.add(pathname);
+    upstreams.add(pathname);
+  }
+
   const status = {
     type: 'status',
-    clients: Array.from(connections.clients.keys()),
-    upstreams: Array.from(connections.upstreams.keys()),
+    clients: Array.from(clients),
+    upstreams: Array.from(upstreams),
   };
   sendMessage(masterWs, JSON.stringify(status), 'multiplexer', 'master');
   logger.debug('Sent status to master:', status);
@@ -551,12 +587,21 @@ function handleRootMasterMessage(message) {
   const data = JSON.parse(message);
   logger.debug(`multiplexer <- master client: root ${JSON.stringify(data)}`);
 
-  if (validateInjectionMessage(data)) return handleMasterInjection(data);
-  else if (validateCloseMessage(data)) return handleMasterClose(data);
-  else
-    throw new Error(
-      `Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`
-    );
+  // Fan out inject/close commands so whichever instance actually holds the
+  // target connection (which may not be this one) can act on them too.
+  if (validateInjectionMessage(data)) {
+    handleMasterInjection(data);
+    redisBridge.publishCommand(data);
+    return;
+  }
+  if (validateCloseMessage(data)) {
+    handleMasterClose(data);
+    redisBridge.publishCommand(data);
+    return;
+  }
+  throw new Error(
+    `Invalid master message: unsupported type '${data?.type}' or missing required fields. Message: ${JSON.stringify(data)}`
+  );
 }
 
 /**
@@ -717,44 +762,31 @@ function setupMessageTimeout(pathname, queuedMessage) {
  * @param {QueuedMessage} queuedMessage - The message that was discarded
  */
 function notifyMasterAboutDiscardedMessage(connectionId, queuedMessage) {
-  for (const master of connections.masters) {
-    if (master.type === 'root') {
-      const notification = JSON.stringify({
-        type: 'message',
-        event: 'message-discarded',
-        connectionId,
-        message: queuedMessage.message.toString(),
-        queuedAt: queuedMessage.timestamp,
-        reason: 'timeout',
-      });
+  const notification = JSON.stringify({
+    type: 'message',
+    event: 'message-discarded',
+    connectionId,
+    message: queuedMessage.message.toString(),
+    queuedAt: queuedMessage.timestamp,
+    reason: 'timeout',
+  });
 
-      sendMessage(master.ws, notification, 'multiplexer', 'master');
+  deliverToRootMasters(notification);
+  deliverToPathMasters(connectionId, notification);
 
-      if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
-        const messageStr = queuedMessage.message.toString();
-        logger.debug(
-          `multiplexer -> master: discarded message notification for ${connectionId}: ${messageStr}`
-        );
-      }
-    } else if (master.targetPath === connectionId) {
-      // Send notification to specific master connection
-      const notification = JSON.stringify({
-        type: 'message',
-        event: 'message-discarded',
-        connectionId,
-        message: queuedMessage.message.toString(),
-        queuedAt: queuedMessage.timestamp,
-        reason: 'timeout',
-      });
-
-      sendMessage(
-        master.ws,
-        notification,
-        'multiplexer',
-        `${master.type}:${master.targetPath}`
-      );
-    }
+  if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+    const messageStr = queuedMessage.message.toString();
+    logger.debug(
+      `multiplexer -> master: discarded message notification for ${connectionId}: ${messageStr}`
+    );
   }
+
+  redisBridge.publishEvent({ kind: 'root', message: notification });
+  redisBridge.publishEvent({
+    kind: 'path',
+    connectionId,
+    message: notification,
+  });
 }
 
 /**
@@ -859,6 +891,7 @@ function handleClientDisconnection(pathname, ws, code, reason) {
     return;
   }
 
+  redisBridge.unregisterConnection(pathname);
   connections.messageQueues.delete(pathname);
 
   const upstream = connections.upstreams.get(pathname);
@@ -1010,14 +1043,10 @@ function formatMasterMessage(type, event, connectionId, details = {}) {
 }
 
 /**
- * Sends a notification to all root masters
- * @param {'message'|'connection'|'error'} type - The type of notification
- * @param {string} event - The specific event or direction
- * @param {string} connectionId - The connection path/id
- * @param {Object} details - Additional event details
+ * Delivers a raw, already-formatted message to all local root masters
+ * @param {string} message - The message to deliver
  */
-function notifyRootMasters(type, event, connectionId, details = {}) {
-  const message = formatMasterMessage(type, event, connectionId, details);
+function deliverToRootMasters(message) {
   for (const master of connections.masters) {
     if (master.type === 'root') {
       sendMessage(master.ws, message, 'multiplexer', 'master');
@@ -1026,12 +1055,13 @@ function notifyRootMasters(type, event, connectionId, details = {}) {
 }
 
 /**
- * Sends a raw message to connection-specific masters
+ * Delivers a raw message to local masters scoped to a specific connection
+ * and direction (client or upstream)
  * @param {string} connectionId - The connection path/id
  * @param {string|Buffer} message - The message to forward
  * @param {'client'|'upstream'} direction - The connection type to notify
  */
-function notifyConnectionMasters(connectionId, message, direction) {
+function deliverToDirectionalMasters(connectionId, message, direction) {
   for (const master of connections.masters) {
     if (master.targetPath === connectionId && master.type === direction) {
       sendMessage(
@@ -1042,6 +1072,57 @@ function notifyConnectionMasters(connectionId, message, direction) {
       );
     }
   }
+}
+
+/**
+ * Delivers a raw, already-formatted message to local non-root masters
+ * scoped to a connection, regardless of whether they watch it as a
+ * client or an upstream
+ * @param {string} connectionId - The connection path/id
+ * @param {string} message - The message to deliver
+ */
+function deliverToPathMasters(connectionId, message) {
+  for (const master of connections.masters) {
+    if (master.type !== 'root' && master.targetPath === connectionId) {
+      sendMessage(
+        master.ws,
+        message,
+        'multiplexer',
+        `${master.type}:${master.targetPath}`
+      );
+    }
+  }
+}
+
+/**
+ * Sends a notification to all root masters (local and, via Redis, on every
+ * other instance)
+ * @param {'message'|'connection'|'error'} type - The type of notification
+ * @param {string} event - The specific event or direction
+ * @param {string} connectionId - The connection path/id
+ * @param {Object} details - Additional event details
+ */
+function notifyRootMasters(type, event, connectionId, details = {}) {
+  const message = formatMasterMessage(type, event, connectionId, details);
+  deliverToRootMasters(message);
+  redisBridge.publishEvent({ kind: 'root', message });
+}
+
+/**
+ * Sends a raw message to connection-specific masters (local and, via Redis,
+ * on every other instance)
+ * @param {string} connectionId - The connection path/id
+ * @param {string|Buffer} message - The message to forward
+ * @param {'client'|'upstream'} direction - The connection type to notify
+ */
+function notifyConnectionMasters(connectionId, message, direction) {
+  deliverToDirectionalMasters(connectionId, message, direction);
+  redisBridge.publishEvent({
+    kind: 'directional',
+    connectionId,
+    message: message.toString(),
+    direction,
+  });
 }
 
 /**
@@ -1506,6 +1587,8 @@ function registerClientConnection(ws, req) {
     upstreamUrl,
   });
 
+  redisBridge.registerConnection(pathname);
+
   notifyRootMasters('connection', 'client-connected', pathname, {
     ip,
     headers: redactHeaders(req.headers),
@@ -1549,10 +1632,16 @@ function shutdownServer() {
     stationHeartbeat = null;
   }
 
-  // Close all connections
+  // Close all connections. Registry cleanup happens here, deterministically,
+  // rather than relying on each client's 'close' event: process.exit() below
+  // doesn't wait for those async close handshakes to finish, so under load
+  // only some of them would actually fire handleClientDisconnection in time
+  // (observed: Redis registry entries left stale for connections whose close
+  // event hadn't completed yet).
   logger.debug(`Closing ${connections.clients.size} client connections`);
   for (const client of connections.clients.values()) {
     logger.debug(`Closing client connection for ${client.upstreamId}`);
+    redisBridge.unregisterConnection(client.upstreamId);
     client.ws.close(1000, 'Server shutting down');
   }
 
@@ -1570,8 +1659,15 @@ function shutdownServer() {
 
   server.close(() => {
     masterServer.close(() => {
-      logger.info('Servers shut down');
-      process.exit(0);
+      redisBridge
+        .close()
+        .catch((error) => {
+          logger.warn('[redis] error while closing:', error.message);
+        })
+        .finally(() => {
+          logger.info('Servers shut down');
+          process.exit(0);
+        });
     });
   });
 }
@@ -1580,8 +1676,10 @@ function shutdownServer() {
  * Sets up process-level event handlers
  */
 function setupProcessEventHandlers() {
-  // Handle server shutdown
+  // Handle server shutdown. Kubernetes sends SIGTERM (not SIGINT) to stop a
+  // pod, so both must trigger the same graceful drain.
   process.on('SIGINT', shutdownServer);
+  process.on('SIGTERM', shutdownServer);
 
   // Log uncaught exceptions
   process.on('uncaughtException', (error) => {
@@ -1613,6 +1711,25 @@ function main() {
       logger.error('Error setting up client connection:', error);
       ws.close(1011, 'Server error during connection setup');
     }
+  });
+
+  // Replay master events/commands published by other instances
+  redisBridge.onRemoteEvent((envelope) => {
+    if (envelope.kind === 'root') {
+      deliverToRootMasters(envelope.message);
+    } else if (envelope.kind === 'directional') {
+      deliverToDirectionalMasters(
+        envelope.connectionId,
+        envelope.message,
+        envelope.direction
+      );
+    } else if (envelope.kind === 'path') {
+      deliverToPathMasters(envelope.connectionId, envelope.message);
+    }
+  });
+  redisBridge.onRemoteCommand((data) => {
+    if (validateInjectionMessage(data)) return handleMasterInjection(data);
+    if (validateCloseMessage(data)) return handleMasterClose(data);
   });
 
   setupProcessEventHandlers();

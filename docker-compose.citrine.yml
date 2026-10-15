@@ -1,0 +1,58 @@
+# HA test setup for TECH-2257, pointed at the real local CitrineOS stack
+# (patterm) already running on the host instead of the synthetic upstream
+# used by docker-compose.yml. Run alongside the patterm stack:
+#
+#   docker compose -f docker-compose.citrine.yml up -d --build
+#
+# Then drive traffic through ws://localhost:18080 (e.g. with the
+# stress_test_citrine tool, WS_URL_MULTIPLEX=ws://localhost:18080,
+# use-multiplex mode).
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  ws-multiplexer-1:
+    build: .
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PORT: "8080"
+      MASTER_PORT: "8081"
+      UPSTREAM_URL: ws://host.docker.internal:8981
+      REDIS_URL: redis://redis:6379
+      REDIS_KEY_PREFIX: "ws-multiplex:"
+      INSTANCE_ID: ws-multiplexer-1
+      LOG_LEVEL: DEBUG
+    ports:
+      - "18081:8081" # direct access to this instance's master port, for debugging
+
+  ws-multiplexer-2:
+    build: .
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PORT: "8080"
+      MASTER_PORT: "8081"
+      UPSTREAM_URL: ws://host.docker.internal:8981
+      REDIS_URL: redis://redis:6379
+      REDIS_KEY_PREFIX: "ws-multiplex:"
+      INSTANCE_ID: ws-multiplexer-2
+      LOG_LEVEL: DEBUG
+    ports:
+      - "18082:8081" # direct access to this instance's master port, for debugging
+
+  lb:
+    image: nginx:alpine
+    depends_on:
+      - ws-multiplexer-1
+      - ws-multiplexer-2
+    volumes:
+      - ./docker/nginx-stream.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18080:8080" # point the stress test's WS_URL_MULTIPLEX here
