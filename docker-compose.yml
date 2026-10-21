@@ -1,0 +1,69 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  upstream-mock:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: node test/upstream-mock-server.js
+    environment:
+      PORT: "9000"
+
+  ws-multiplexer-1:
+    build: .
+    depends_on:
+      - redis
+      - upstream-mock
+    environment:
+      PORT: "8080"
+      MASTER_PORT: "8081"
+      UPSTREAM_URL: ws://upstream-mock:9000
+      REDIS_URL: redis://redis:6379
+      REDIS_KEY_PREFIX: "ws-multiplex:"
+      INSTANCE_ID: ws-multiplexer-1
+      LOG_LEVEL: DEBUG
+    ports:
+      - "18081:8081" # direct access to this instance's master port, for debugging
+
+  ws-multiplexer-2:
+    build: .
+    depends_on:
+      - redis
+      - upstream-mock
+    environment:
+      PORT: "8080"
+      MASTER_PORT: "8081"
+      UPSTREAM_URL: ws://upstream-mock:9000
+      REDIS_URL: redis://redis:6379
+      REDIS_KEY_PREFIX: "ws-multiplex:"
+      INSTANCE_ID: ws-multiplexer-2
+      LOG_LEVEL: DEBUG
+    ports:
+      - "18082:8081" # direct access to this instance's master port, for debugging
+
+  lb:
+    image: nginx:alpine
+    depends_on:
+      - ws-multiplexer-1
+      - ws-multiplexer-2
+    volumes:
+      - ./docker/nginx-stream.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18080:8080" # single entry point clients/harness should target
+
+  # Not started by `docker compose up`; run scenarios on demand, e.g.:
+  #   docker compose run --rm harness node test/load-clients.js
+  harness:
+    image: node:22-alpine
+    profiles: ["tools"]
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      WS_URL: ws://lb:8080
+    depends_on:
+      - lb
