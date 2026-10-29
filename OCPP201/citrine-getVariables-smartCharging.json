@@ -1,0 +1,32 @@
+{
+  "getVariableData": [
+    {
+      "component": {
+        "name": "SmartChargingCtrlr"
+      },
+      "variable": {
+        "name": "Enabled"
+      },
+      "attributeType": "Actual"
+    },
+    {
+      "component": {
+        "name": "SmartChargingCtrlr"
+      },
+      "variable": {
+        "name": "Entries",
+        "instance": "ChargingProfiles"
+      },
+      "attributeType": "Actual"
+    },
+    {
+      "component": {
+        "name": "ChargingStation"
+      },
+      "variable": {
+        "name": "AvailabilityState"
+      },
+      "attributeType": "Actual"
+    }
+  ]
+}

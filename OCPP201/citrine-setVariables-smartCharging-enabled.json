@@ -1,0 +1,14 @@
+{
+  "setVariableData": [
+    {
+      "component": {
+        "name": "SmartChargingCtrlr"
+      },
+      "variable": {
+        "name": "Enabled"
+      },
+      "attributeType": "Actual",
+      "attributeValue": "true"
+    }
+  ]
+}
